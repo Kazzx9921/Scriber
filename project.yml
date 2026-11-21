@@ -1,0 +1,206 @@
+name: Scriber
+options:
+  bundleIdPrefix: com.geekaz
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  developmentLanguage: zh-Hant
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 77T9U5NPX9
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  ScriberCore:
+    path: Packages/ScriberCore
+
+targets:
+  Scriber:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: App
+    dependencies:
+      - target: ScriberKeyboard
+      - package: ScriberCore
+        product: ScriberCore
+      - package: ScriberCore
+        product: ScriberShared
+    entitlements:
+      path: App/Scriber.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.geekaz.Scriber
+        # API keys shared with the keyboard (in-keyboard capture runs the pipeline there).
+        # KeychainStore migrates keys saved before this group existed.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.geekaz.Scriber.shared
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Scriber
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Resolved at build time; KeychainStore reads it (falls back to no group if unexpanded).
+        ScriberKeychainAccessGroup: $(AppIdentifierPrefix)com.geekaz.Scriber.shared
+        CFBundleURLTypes:
+          - CFBundleURLName: com.geekaz.Scriber
+            CFBundleURLSchemes: [scriber]
+        UIBackgroundModes: [audio]
+        NSMicrophoneUsageDescription: "Scriber 需要麥克風來把你說的話轉成文字。"
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.geekaz.Scriber
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+  ScriberKeyboard:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Keyboard
+    dependencies:
+      - package: ScriberCore
+        product: ScriberShared
+      # In-keyboard capture (experimental) runs the same pipeline inside the extension.
+      - package: ScriberCore
+        product: ScriberCore
+    entitlements:
+      path: Keyboard/ScriberKeyboard.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.geekaz.Scriber
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.geekaz.Scriber.shared
+    info:
+      path: Keyboard/Info.plist
+      properties:
+        CFBundleDisplayName: Scriber
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ScriberKeychainAccessGroup: $(AppIdentifierPrefix)com.geekaz.Scriber.shared
+        # In-keyboard capture records through WebKit under the app's microphone permission;
+        # the projects that verified the technique also declare the key in the extension.
+        NSMicrophoneUsageDescription: "Scriber 需要麥克風來把你說的話轉成文字。"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            IsASCIICapable: false
+            PrefersRightToLeft: false
+            PrimaryLanguage: zh-Hant
+            RequestsOpenAccess: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.geekaz.Scriber.Keyboard
+        TARGETED_DEVICE_FAMILY: "1"
+
+  # macOS menu bar app (docs/PRD-macOS版.md). Direct distribution: no App Sandbox, hardened
+  # runtime on. Signed with "Apple Development" so the Accessibility grant survives rebuilds.
+  ScriberMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Mac
+        excludes:
+          - "Tests/**"
+          - "Tools/**"
+    dependencies:
+      - package: ScriberCore
+        product: ScriberCore
+      - package: ScriberCore
+        product: ScriberShared
+    entitlements:
+      path: Mac/Resources/ScriberMac.entitlements
+      properties:
+        # Hardened runtime blocks the microphone without this.
+        com.apple.security.device.audio-input: true
+    info:
+      path: Mac/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Scriber
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.productivity
+        # Menu bar only, no Dock icon.
+        LSUIElement: true
+        NSMicrophoneUsageDescription: "Scriber 需要麥克風來把你說的話轉成文字。"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.geekaz.Scriber.mac
+        PRODUCT_NAME: Scriber
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_IDENTITY: Apple Development
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: NO
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    scheme: {}
+
+  # Logic tests for the Mac app (hotkey state machine, clip writer/thresholds, pasteboard
+  # snapshot, HUD messages). Hostless: the pure sources are compiled in, the app never launches.
+  ScriberMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Mac/Engine/Logic
+      - path: Mac/Tests
+    dependencies:
+      - package: ScriberCore
+        product: ScriberCore
+      - package: ScriberCore
+        product: ScriberShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.geekaz.Scriber.mac.tests
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+    scheme:
+      testTargets:
+        - ScriberMacTests
+
+  # Off-screen renders of the Mac windows to PNG (design review without launching the app).
+  # Compiles the app's sources minus the @main file into a hostless test bundle; views are fed
+  # injected sample state (no microphone, Keychain, network or hotkey registration).
+  # Run: xcodebuild test -scheme ScriberMacSnapshots (PNGs go to $SCRIBER_SNAPSHOT_DIR or /tmp).
+  ScriberMacSnapshots:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Mac
+        excludes:
+          - "Tests/**"
+          - "Tools/**"
+          - "Resources/**"
+          - "App/ScriberMacApp.swift"
+      - path: MacSnapshots
+    dependencies:
+      - package: ScriberCore
+        product: ScriberCore
+      - package: ScriberCore
+        product: ScriberShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.geekaz.Scriber.mac.snapshots
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+    scheme:
+      testTargets:
+        - ScriberMacSnapshots
