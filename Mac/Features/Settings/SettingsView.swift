@@ -172,6 +172,15 @@ struct SettingsView: View {
                     LabeledContent("首次設定") {
                         Button("重新進行…") { confirmOnboarding = true }
                     }
+                    LabeledContent("原始碼") {
+                        Link(destination: AppLinks.repository) {
+                            HStack(spacing: 4) {
+                                Text("GitHub")
+                                Image(systemName: "arrow.up.right").font(.caption.weight(.semibold))
+                            }
+                        }
+                        .help(AppLinks.repository.absoluteString)
+                    }
                     LabeledContent("版本") {
                         HStack(spacing: 4) {
                             Text(versionText).foregroundStyle(.secondary)

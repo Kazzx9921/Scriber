@@ -271,7 +271,7 @@ private struct APIKeyPage: View {
 
     var body: some View {
         OnboardingPage(symbol: "key.fill", title: "填入 API key",
-                       message: "至少需要一組。",
+                       message: "你說的話會直接送到你選的服務辨識。至少需要一組。",
                        info: "Scriber 沒有自己的伺服器，會用你的 key 直接連到辨識服務，費用由服務商向你收取。想用 Claude Haiku 潤飾或自訂引擎，之後可以在「設定」裡加。") {
             VStack(spacing: 12) {
                 InlineKeyCard(kind: .elevenLabs, tag: "最準")

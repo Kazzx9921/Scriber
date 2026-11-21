@@ -231,7 +231,7 @@ struct OnboardingView: View {
                            why: "Scriber 沒有自己的伺服器，聲音直接送到你選的服務，費用由服務商向你收取。Scribe v3 最準；Groq 最快也最便宜，同一把 key 還能用 AI 潤飾和翻譯。之後可以在「設定」更換。") {
             SpotIllustration(symbol: "key.fill", size: 96)
         } subtitle: {
-            Text("貼上你自己的 API key 就能用。")
+            Text("你說的話會直接送到你選的服務辨識。")
         } content: {
             VStack(spacing: 0) {
                 ForEach(Array(STTProviderKind.builtIn.enumerated()), id: \.element) { index, kind in

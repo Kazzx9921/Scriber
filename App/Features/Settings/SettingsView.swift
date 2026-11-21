@@ -79,6 +79,15 @@ struct SettingsView: View {
                 // MARK: About
                 Section {
                     LabeledContent("版本", value: versionText)
+                    Link(destination: AppLinks.repository) {
+                        HStack {
+                            Label("GitHub 原始碼", systemImage: "chevron.left.forwardslash.chevron.right")
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Button("重新進行首次設定") { confirmRestartOnboarding = true }
                 } header: {
                     SectionTitle("關於", info: "Scriber 沒有自己的伺服器。聲音直接從手機送到你選的服務，不會傳任何資料給開發者。歷史紀錄和字典只存在這支手機。")
