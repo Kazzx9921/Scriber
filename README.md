@@ -1,5 +1,12 @@
 # Scriber
 
+<p>
+  <img src="https://img.shields.io/badge/platform-iOS%2017%2B%20%7C%20macOS%2014%2B-blue" alt="Platform">
+  <img src="https://img.shields.io/badge/swift-5.9-orange" alt="Swift">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/github/stars/Kazzx9921/Scriber?style=flat" alt="Stars">
+</p>
+
 開源的語音輸入工具：iOS 鍵盤與 App，加上 macOS 選單列 App。說話，就變成整理好的繁體中文。
 
 An open-source voice dictation tool for iOS (keyboard + app) and macOS (menu-bar app), tuned for Traditional Chinese (Taiwan). Bring your own API key; there is no backend.
@@ -78,3 +85,13 @@ key 只存在裝置的鑰匙圈。
 ## 回報問題
 
 請到 [Issues](https://github.com/Kazzx9921/Scriber/issues)。App 內的診斷紀錄不含說話內容和 key，可以直接貼上。
+
+## Star History
+
+<a href="https://www.star-history.com/#Kazzx9921/Scriber&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Kazzx9921/Scriber&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Kazzx9921/Scriber&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Kazzx9921/Scriber&type=date&legend=top-left" />
+ </picture>
+</a>
