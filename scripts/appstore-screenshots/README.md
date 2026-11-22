@@ -54,7 +54,7 @@ python3 scripts/appstore-screenshots/compose.py
 3. 用 DEBUG 的 `model.debugShow(...)` 指定狀態，`showsGlobe: false`（Face ID iPhone 的鍵盤不畫自己的地球鍵）：
    - 01 錄音中：`model.levels.provider` 換成假的音量曲線，`debugShow(availability: .ready, activity: .recording(toggle: true), warm: true, showsGlobe: false)`
    - 02 結果：輸入框放整理後的文字，`debugShow(availability: .ready, activity: .idle, canUndo: true, warm: true, showsGlobe: false)`（剛插入文字時會出現復原鍵）
-   - 03 翻譯語言：`debugShow(... .idle ...)` 之後，把 `model.translatePicker.openContext` 換成回傳英文、日文、韓文，再用 `touchChanged(to:)` 按住翻譯鍵中心 0.5 秒、滑到第二格（日文）。這就是按鍵本身的手勢會呼叫的方法，彈出位置和高亮都是真的。
+   - 03 翻譯語言：`debugShow(... .idle ...)` 之後，`model.debugModes(KeyboardModes.state(...))`（出廠的模式、沒有用過的紀錄；它也讓 model 當作有完整取用），再用 `model.modePicker.touchChanged(to:)` 按住模式鍵中心 0.4 秒、滑到「日文」那一格。這就是按鍵本身的手勢會呼叫的方法，彈出位置和高亮都是真的。2026-11-22 之前的截圖是舊的翻譯鍵（只有三個語言）；模式鍵的長按多了模式，要重截。
 4. 用同樣的模擬器設定，啟動後等 8 秒（剛安裝完第一次啟動比較慢）再 `xcrun simctl io <udid> screenshot`，存成 `docs/appstore/raw/01-keyboard-recording.png`、`02-keyboard-result.png`、`03-keyboard-translate.png`。
 
 ## 內容

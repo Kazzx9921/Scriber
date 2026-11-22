@@ -47,6 +47,7 @@ struct RootView: View {
             engine.refreshMicPermission()
             setup.refresh()
             if DebugLaunch.demoData { DemoData.seed(dictionary: dictionary, history: history) }
+            if DebugLaunch.demoModes { DemoData.seedModes(store: .shared, prompts: .shared) }
         }
     }
 

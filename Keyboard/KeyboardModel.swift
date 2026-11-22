@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 import UIKit
-import ScriberCore  // KeychainStore (shared keychain), for the translate availability check
+import ScriberCore  // KeychainStore (shared keychain), ModeStore / KeyboardModes for the mode key
 import ScriberShared
 
 /// Keyboard-side state machine. Two ways to record:
@@ -59,7 +59,6 @@ final class KeyboardModel {
     }
     private(set) var slide: SlideIntent = .none
     private(set) var isHolding = false
-    var translateLocked = false
     private(set) var hasSelection = false
     private(set) var canUndo = false
     private(set) var returnKeyTitle = "換行"
@@ -72,13 +71,15 @@ final class KeyboardModel {
     /// Tapping records without switching apps (fresh heartbeat, or in-keyboard capture ready).
     private(set) var isWarm = false
     private(set) var forcesDarkAppearance = false
-    /// What translate mode outputs (the same setting as the app's Settings screen).
+    /// What the translate mode outputs when it follows the global language (the same setting as
+    /// the app's Settings screen; the mode key's long press switches it).
     private(set) var translateLanguage = TranslateLanguage.find("en")
-    /// The three languages of the translate key's long-press popup.
+    /// The three quick languages of the mode key's long-press popup.
     private(set) var translateQuickLanguages: [TranslateLanguage] = []
-    /// Non-nil when the keyboard can tell up front that translate cannot work.
-    private(set) var translateBlocker: TranslateBlocker?
-    /// A hint shown in the mic pill for a moment (translate language, translate unavailable).
+    /// The mode key: the mode the mic uses, what a tap switches to, the long-press list
+    /// (`KeyboardModes`). The shipped modes until the store is read (it needs Full Access).
+    private(set) var modeKeyState = KeyboardModel.shippedModeState
+    /// A hint shown in the mic pill for a moment (mode switched, mode unavailable, copied).
     /// Wins over a failure while it lasts.
     private(set) var notice: KeyboardFeedback?
     /// Bumped for every problem shown, to shake the mic pill once.
@@ -87,8 +88,8 @@ final class KeyboardModel {
     // MARK: Private
     @ObservationIgnored let channel = SessionChannel()
     @ObservationIgnored let levels = LevelHistory()
-    /// Long-press language popup of the translate key (observable on its own).
-    @ObservationIgnored let translatePicker = TranslatePicker()
+    /// Long-press popup of the mode key (observable on its own).
+    @ObservationIgnored let modePicker = ModePicker()
     @ObservationIgnored private var noticeToken = 0
     @ObservationIgnored private var failureDismissWork: DispatchWorkItem?
     @ObservationIgnored private(set) weak var controller: KeyboardViewController?
@@ -110,7 +111,7 @@ final class KeyboardModel {
     @ObservationIgnored private var isVisible = false
     @ObservationIgnored private var visibleSince = Date.distantPast
     /// A local result that finished while the keyboard was hidden (memory only, never on disk).
-    @ObservationIgnored private var heldLocalResult: (id: String, text: String, at: Date)?
+    @ObservationIgnored private var heldLocalResult: (id: String, text: String, delivery: KeyboardModes.Delivery, at: Date)?
     @ObservationIgnored private var localReady = (available: false, reason: "not-checked")
     @ObservationIgnored private var lastLoggedState = ""
     @ObservationIgnored private var deferredLoggedID: String?
@@ -123,10 +124,10 @@ final class KeyboardModel {
             self?.apply(state, source: "notify")
         }
         local.onEvent = { [weak self] event in self?.handleLocal(event) }
-        translatePicker.onTap = { [weak self] in self?.translateKeyTapped() }
-        translatePicker.openContext = { [weak self] in self?.translatePickerContext() }
-        translatePicker.onChoose = { [weak self] language, via in self?.chooseTranslateLanguage(language, via: via) }
-        translatePicker.onFeedback = { [weak self] feedback in
+        modePicker.onTap = { [weak self] in self?.modeKeyTapped() }
+        modePicker.openContext = { [weak self] in self?.modePickerContext() }
+        modePicker.onChoose = { [weak self] option, via in self?.chooseModeOption(option, via: via) }
+        modePicker.onFeedback = { [weak self] feedback in
             switch feedback {
             case .opened: self?.haptics.light(); self?.haptics.prepareSelection()
             case .highlight: self?.haptics.selection()
@@ -135,7 +136,12 @@ final class KeyboardModel {
     }
 
     private var proxy: UITextDocumentProxy? { controller?.textDocumentProxy }
-    private var hasFullAccess: Bool { controller?.hasFullAccess == true }
+    private var hasFullAccess: Bool {
+        #if DEBUG
+        if debugFullAccess { return true }
+        #endif
+        return controller?.hasFullAccess == true
+    }
 
     // MARK: Lifecycle
 
@@ -146,9 +152,12 @@ final class KeyboardModel {
         guard let controller else { return }
         showsGlobe = controller.needsInputModeSwitchKey
         haptics.enabled = controller.hasFullAccess && AppSettings.shared.hapticsEnabled
-        if controller.hasFullAccess { reloadTranslate() } // settings live in the App Group
+        // Modes and settings live in the App Group, which needs Full Access; without it the
+        // keyboard shows only the Full Access panel and the shipped modes stay in place.
+        if controller.hasFullAccess { reloadModes() }
         textContextChanged()
-        localReady = local.availability(hasFullAccess: controller.hasFullAccess, checkKey: true)
+        localReady = local.availability(hasFullAccess: controller.hasFullAccess, checkKey: true,
+                                        engine: modeKeyState.current?.sttProvider)
         let state = channel.readState()
         let mic = InKeyboardCapture.microphonePermission()
         KBLog.log("appear kb=\(instance) fullAccess=\(controller.hasFullAccess) alive=\(state.isAlive()) local=\(localReady.reason) micApp=\(mic.published ?? "unpublished") micOwn=\(mic.own) pending=\(KBLog.id(memory.pending?.id)) \(KBLog.memory)")
@@ -176,7 +185,7 @@ final class KeyboardModel {
     func setLandscape(_ landscape: Bool) {
         guard isLandscape != landscape else { return }
         isLandscape = landscape
-        translatePicker.close(reason: "rotate") // its geometry was for the other height
+        modePicker.close(reason: "rotate") // its geometry was for the other height
     }
 
     func keyboardWillDisappear() {
@@ -184,7 +193,7 @@ final class KeyboardModel {
         isVisible = false
         deletePressEnded()
         stopLaunchPoll()
-        translatePicker.reset()
+        modePicker.reset()
         clearNotice()
         // A benign outcome is not worth showing again when the keyboard comes back.
         if failureFeedback?.kind == .benign { dismissError() }
@@ -195,7 +204,7 @@ final class KeyboardModel {
             activity = .idle
         } else if requestPath == .app, activity.isRecording {
             // Keep what was said; the result is inserted if this field comes back in time.
-            stop(translate: false)
+            stop()
         }
         if isHolding { isHolding = false; slide = .none }
     }
@@ -209,8 +218,8 @@ final class KeyboardModel {
         let selected = proxy.selectedText ?? ""
         let hasSelection = !selected.isEmpty
         if self.hasSelection != hasSelection { self.hasSelection = hasSelection }
-        // The translate key is hidden while text is selected (the mic then rewrites the selection).
-        if hasSelection { translatePicker.close(reason: "selection") }
+        // The mode key is hidden while text is selected (the mic then rewrites the selection).
+        if rewritesSelection { modePicker.close(reason: "selection") }
         let title = Self.returnTitle(proxy.returnKeyType ?? .default)
         if returnKeyTitle != title { returnKeyTitle = title }
         let dark = proxy.keyboardAppearance == .dark
@@ -411,7 +420,7 @@ final class KeyboardModel {
             KBLog.log("tap ignored: no full access")
             return
         }
-        translatePicker.close(reason: "mic")
+        modePicker.close(reason: "mic")
         let state = channel.readState()
         if isAwaitingLaunch(state) {
             // Double taps and impatient taps while the app is starting: harmless. Re-check first,
@@ -431,7 +440,7 @@ final class KeyboardModel {
         switch activity {
         case .recording:
             KBLog.log("tap: stop path=\(requestPath?.rawValue ?? "-") id=\(KBLog.id(request?.id))")
-            if requestPath == .local { local.stop() } else { stop(translate: false) }
+            if requestPath == .local { local.stop() } else { stop() }
             return
         case .processing:
             KBLog.log("tap ignored: processing")
@@ -443,28 +452,37 @@ final class KeyboardModel {
             KBLog.log("tap ignored: opening the app")
             return
         }
+        // The app may have changed the modes while the keyboard was on screen (cheap when not).
+        reloadModes()
         let next = makeRequest()
+        let modeLog = "mode=\(next.mode.rawValue) modeID=\(next.modeID ?? "-")"
         // Liveness is re-read at the tap: the cached availability can be stale.
         if state.isAlive() {
-            KBLog.log("tap: start path=app-warm id=\(KBLog.id(next.id)) mode=\(next.mode.rawValue)")
+            KBLog.log("tap: start path=app-warm id=\(KBLog.id(next.id)) \(modeLog)")
             startViaApp(next)
             return
         }
-        localReady = local.availability(hasFullAccess: hasFullAccess, checkKey: true)
+        localReady = local.availability(hasFullAccess: hasFullAccess, checkKey: true, engine: engine(for: next))
         if localReady.available, let host = controller?.view {
-            KBLog.log("tap: start path=local id=\(KBLog.id(next.id)) mode=\(next.mode.rawValue) \(KBLog.memory)")
+            KBLog.log("tap: start path=local id=\(KBLog.id(next.id)) \(modeLog) \(KBLog.memory)")
             startLocal(next, host: host)
             return
         }
-        KBLog.log("tap: start path=open-app id=\(KBLog.id(next.id)) mode=\(next.mode.rawValue) local=\(localReady.reason)")
+        KBLog.log("tap: start path=open-app id=\(KBLog.id(next.id)) \(modeLog) local=\(localReady.reason)")
         availability = .needsSession
         launchAndRecord(next)
     }
 
+    /// The current mode (or 改寫 for a selection) by id; never clipboard, app name or, outside
+    /// 改寫, the selection (`KeyboardModes.request`).
     private func makeRequest() -> DictationRequest {
-        let selected = (proxy?.selectedText).flatMap { $0.isEmpty ? nil : $0 }
-        let mode: DictationMode = selected != nil ? .edit : (translateLocked ? .translate : .dictate)
-        return DictationRequest(mode: mode, selectedText: selected, fieldHint: fieldHint())
+        KeyboardModes.request(modeKeyState, selectedText: proxy?.selectedText, fieldHint: fieldHint())
+    }
+
+    /// The engine `request` records with: in-keyboard capture needs that engine's key.
+    private func engine(for request: DictationRequest) -> STTProviderKind? {
+        if request.modeID == modeKeyState.current?.id, let current = modeKeyState.current { return current.sttProvider }
+        return ModeStore.shared.resolve(request).sttProvider
     }
 
     /// The app is not running: leave the request for it and open it. It starts recording as
@@ -640,31 +658,161 @@ final class KeyboardModel {
         }
     }
 
-    // MARK: Translate key
+    // MARK: Mode key
 
-    /// Why translate cannot work, as far as the keyboard can tell up front.
-    enum TranslateBlocker: String, Equatable {
-        case polishOff = "polish-off"
-        case polishKeyMissing = "polish-key-missing"
-    }
+    /// The shipped modes, before (or without) the App Group: the old translate key's behaviour.
+    static let shippedModeState = KeyboardModes.state(
+        modes: [], prompts: [],
+        defaults: ModeDefaults(sttProvider: .elevenLabsScribe, polishProvider: .off, forceTraditional: true,
+                               spaceBetweenCJKAndLatin: true, translateTarget: "English"),
+        recents: [], keyboardLanguageID: "en", hasLLMKey: nil)
 
-    /// Re-reads the language, the quick languages and whether translate can work (App Group
-    /// defaults + one shared-keychain read). Called on appear and on every translate-key action.
-    private func reloadTranslate() {
+    /// Re-reads the modes, the recently used list, the translate languages and whether an AI key
+    /// exists: two small JSON files in the App Group (decoded again only when another process
+    /// replaced them), its defaults and two shared-keychain lookups. Called on appear, on every
+    /// mode-key action and at each mic tap. Logs mode ids and counts only.
+    private func reloadModes() {
         let settings = AppSettings.shared
         let language = Self.currentTranslateLanguage(settings)
         if translateLanguage != language { translateLanguage = language }
         let quick = settings.translateQuickLanguageIDs.map(TranslateLanguage.find)
         if translateQuickLanguages != quick { translateQuickLanguages = quick }
-        let blocker = Self.translateBlocker(settings)
-        if translateBlocker != blocker {
-            KBLog.log("translate availability \(translateBlocker?.rawValue ?? "ok") → \(blocker?.rawValue ?? "ok")")
-            translateBlocker = blocker
+        let state = loadModeState(languageID: language.id)
+        guard state != modeKeyState else { return }
+        KBLog.log("modes current=\(state.current?.id ?? "-") partner=\(state.partner?.id ?? "-") "
+                  + "menu=\(state.menu.count) blocked=\(state.menu.filter(\.isBlocked).count) rewrite=\(state.rewriteOnSelection)")
+        modeKeyState = state
+    }
+
+    private func loadModeState(languageID: String) -> KeyboardModes.State {
+        #if DEBUG
+        if let debugModeState { return debugModeState }
+        #endif
+        return ModeStore.shared.keyboardState(keyboardLanguageID: languageID, hasLLMKey: Self.hasLLMKey())
+    }
+
+    /// Whether the AI can run: a Groq or Anthropic key in the keychain shared with the app.
+    /// "Missing" is only trustworthy when that keychain group is in use; otherwise the keyboard
+    /// cannot see the app's keys at all (nil), and the pipeline reports the real problem if any.
+    private static func hasLLMKey() -> Bool? {
+        let keys = KeychainStore.shared
+        if keys.hasKey(for: .groq) || keys.hasKey(for: .anthropic) { return true }
+        return keys.accessGroup != nil ? false : nil
+    }
+
+    /// A selection makes the mic rewrite it (改寫 enabled); the mode key steps aside meanwhile.
+    var rewritesSelection: Bool { hasSelection && modeKeyState.rewriteOnSelection }
+
+    /// What the round key shows (see `ModeKeyLook`). The key is not drawn at all when there is
+    /// nothing to switch to (`KeyboardModes.State.showsKey`).
+    var modeKeyLook: ModeKeyLook {
+        let state = modeKeyState
+        guard let current = state.current else { return .calm(symbol: "translate", dimmed: true) }
+        if state.isCalm {
+            let shown = state.partner ?? current
+            return .calm(symbol: shown.icon, dimmed: shown.isBlocked)
         }
-        if let blocker, translateLocked {
-            translateLocked = false // a translate request would only fail
-            KBLog.log("translate off reason=\(blocker.rawValue)")
+        if current.isTranslate, let id = current.translateLanguageID {
+            return .activeLabel(TranslateLanguage.find(id).shortLabel)
         }
+        return .active(symbol: current.icon)
+    }
+
+    /// The long-press cells (also the VoiceOver actions of the key).
+    var modeOptions: [ModeKeyOption] {
+        ModeKeyOption.options(for: modeKeyState, quickLanguages: translateQuickLanguages,
+                              currentLanguageID: translateLanguage.id)
+    }
+
+    /// "聽寫", "翻譯，英文", "Email".
+    var modeAccessibilityValue: String {
+        guard let current = modeKeyState.current else { return "" }
+        if current.isTranslate, let id = current.translateLanguageID {
+            return "\(current.name)，\(TranslateLanguage.find(id).displayName)"
+        }
+        return current.name
+    }
+
+    var modeAccessibilityHint: String {
+        guard let partner = modeKeyState.partner else { return "可以用動作選擇翻譯的語言" }
+        if partner.isBlocked { return "「\(partner.name)」需要 API key，點兩下查看" }
+        return "點兩下切換到「\(partner.name)」，也可以用動作選擇其他模式"
+    }
+
+    /// What the mic will do, for its VoiceOver label.
+    var micAccessibilityLabel: String {
+        if rewritesSelection { return "說話改字" }
+        guard let current = modeKeyState.current, !modeKeyState.isCalm else { return "開始說話" }
+        if current.isTranslate, let id = current.translateLanguageID {
+            return "說話翻譯成\(TranslateLanguage.find(id).displayName)"
+        }
+        return "開始說話，\(current.name)"
+    }
+
+    /// Tap: switch between the two most recent modes.
+    func modeKeyTapped() {
+        guard hasFullAccess else { return }
+        reloadModes()
+        guard let partner = modeKeyState.partner else { return } // only a translate mode: languages only
+        if partner.isBlocked {
+            showModeBlocked(partner)
+            return
+        }
+        switchMode(to: partner, via: "tap")
+    }
+
+    /// Long-press popup, VoiceOver action: choose a mode, or the translate mode in one of the
+    /// quick languages.
+    func chooseModeOption(_ option: ModeKeyOption, via: String) {
+        guard hasFullAccess else { return }
+        reloadModes()
+        guard let item = modeKeyState.item(id: option.modeID) else {
+            KBLog.log("mode option gone id=\(option.modeID)")
+            return
+        }
+        if item.isBlocked {
+            showModeBlocked(item)
+            return
+        }
+        if let languageID = option.languageID, languageID != translateLanguage.id {
+            KBLog.log("translate lang \(translateLanguage.id)→\(languageID) via=\(via)")
+            AppSettings.shared.translateLanguageID = languageID // also sets translateTarget
+        }
+        switchMode(to: item, via: via)
+    }
+
+    private func switchMode(to item: KeyboardModes.Item, via: String) {
+        let previous = modeKeyState.current?.id ?? "-"
+        // The recently used list is the current mode (App Group defaults; modes.json is not written).
+        ModeStore.shared.noteUsed(id: item.id)
+        reloadModes()
+        haptics.key()
+        let now = modeKeyState.current ?? item
+        KBLog.log("mode \(previous)→\(now.id) via=\(via) lang=\(translateLanguage.id)")
+        if modeKeyState.isCalm {
+            // Back to plain dictation: the pill shows the mic again, like translate-off before.
+            clearNotice()
+            UIAccessibility.post(notification: .announcement, argument: now.name)
+        } else if now.isTranslate, let id = now.translateLanguageID {
+            showNotice(KeyboardFeedback.translateOn(languageName: TranslateLanguage.find(id).displayName))
+        } else {
+            showNotice(KeyboardFeedback.modeOn(symbol: now.icon, name: now.name))
+        }
+    }
+
+    private func showModeBlocked(_ item: KeyboardModes.Item) {
+        KBLog.log("mode unavailable id=\(item.id) reason=ai-key-missing")
+        showNotice(KeyboardFeedback.modeNeedsKey())
+    }
+
+    /// The long-press popup is about to open: its options, or nil to refuse.
+    private func modePickerContext() -> (options: [ModeKeyOption], compact: Bool)? {
+        guard hasFullAccess else { return nil }
+        reloadModes()
+        let options = modeOptions
+        guard !options.isEmpty else { return nil }
+        KBLog.log("mode picker open options=\(options.count) current=\(modeKeyState.current?.id ?? "-")")
+        return (options, isLandscape)
     }
 
     /// The pipeline reads `translateTarget`; `translateLanguageID` is newer and may be absent or
@@ -674,72 +822,6 @@ final class KeyboardModel {
         let target = settings.translateTarget
         if byID.promptName == target { return byID }
         return TranslateLanguage.all.first { $0.promptName == target } ?? byID
-    }
-
-    private static func translateBlocker(_ settings: AppSettings) -> TranslateBlocker? {
-        // Translate works with any LLM key, whether or not "AI 潤飾" is on (the pipeline picks
-        // the polish provider if one is selected, otherwise whichever key exists).
-        let keys = KeychainStore.shared
-        if keys.hasKey(for: .groq) || keys.hasKey(for: .anthropic) { return nil }
-        // "Missing" is only trustworthy when the keychain group shared with the app is in use;
-        // otherwise the keyboard cannot see the app's keys at all, and the pipeline reports the
-        // real problem if there is one.
-        return keys.accessGroup != nil ? .polishKeyMissing : nil
-    }
-
-    private func showTranslateBlocked(_ blocker: TranslateBlocker) {
-        KBLog.log("translate unavailable reason=\(blocker.rawValue)")
-        showNotice(blocker == .polishOff ? KeyboardFeedback.translateNeedsPolish() : KeyboardFeedback.translateNeedsKey())
-    }
-
-    /// Tap: translate on / off.
-    func translateKeyTapped() {
-        guard hasFullAccess else { return }
-        reloadTranslate()
-        if let translateBlocker {
-            showTranslateBlocked(translateBlocker)
-            return
-        }
-        translateLocked.toggle()
-        haptics.key()
-        KBLog.log("translate \(translateLocked ? "on" : "off") lang=\(translateLanguage.id) via=tap")
-        if translateLocked {
-            showNotice(KeyboardFeedback.translateOn(languageName: translateLanguage.displayName))
-        } else {
-            clearNotice()
-            UIAccessibility.post(notification: .announcement, argument: "已關閉翻譯")
-        }
-    }
-
-    /// Long-press popup, VoiceOver action: choose the language and turn translate on.
-    func chooseTranslateLanguage(_ language: TranslateLanguage, via: String) {
-        guard hasFullAccess else { return }
-        reloadTranslate()
-        if let translateBlocker {
-            showTranslateBlocked(translateBlocker)
-            return
-        }
-        let previous = translateLanguage.id
-        let wasOn = translateLocked
-        AppSettings.shared.translateLanguageID = language.id // also sets translateTarget
-        translateLanguage = language
-        translateLocked = true
-        KBLog.log("translate lang \(previous)→\(language.id) on=\(wasOn)→true via=\(via)")
-        showNotice(KeyboardFeedback.translateOn(languageName: language.displayName))
-    }
-
-    /// The long-press popup is about to open: its options, or nil (and an explanation) when
-    /// translate cannot work.
-    private func translatePickerContext() -> (languages: [TranslateLanguage], compact: Bool)? {
-        guard hasFullAccess else { return nil }
-        reloadTranslate()
-        if let translateBlocker {
-            showTranslateBlocked(translateBlocker)
-            return nil
-        }
-        guard !translateQuickLanguages.isEmpty else { return nil }
-        KBLog.log("translate picker open options=\(translateQuickLanguages.map(\.id).joined(separator: ",")) current=\(translateLanguage.id)")
-        return (translateQuickLanguages, isLandscape)
     }
 
     func launchApp() {
@@ -825,13 +907,12 @@ final class KeyboardModel {
         startWatchdog()
     }
 
-    private func stop(translate: Bool) {
-        guard var current = request, requestPath == .app else { return }
-        if current.mode != .edit, translate || translateLocked { current.mode = .translate }
-        request = current
+    /// The mode was chosen at the start (`modeID` in the request); the stop repeats the same request.
+    private func stop() {
+        guard let current = request, requestPath == .app else { return }
         memory.setPending(current, via: memory.pending?.via ?? KeyboardMemory.viaCommand, stoppedAt: Date())
         channel.send(.stop, request: current)
-        KBLog.log("stop sent id=\(KBLog.id(current.id)) mode=\(current.mode.rawValue)")
+        KBLog.log("stop sent id=\(KBLog.id(current.id)) mode=\(current.mode.rawValue) modeID=\(current.modeID ?? "-")")
         activity = .processing
         haptics.light()
     }
@@ -929,10 +1010,10 @@ final class KeyboardModel {
         case .processing:
             isStartingCapture = false
             if requestPath == .local { activity = .processing }
-        case .finished(let finished, let text):
+        case .finished(let finished, let text, let output):
             if request?.id == finished.id { endRequest() }
             activity = .idle
-            insertLocal(text, id: finished.id)
+            insertLocal(text, id: finished.id, delivery: KeyboardModes.delivery(for: output))
         case .failed(let failed, let message, let retryable):
             if request?.id == failed.id { endRequest() }
             failedRequest = failed
@@ -941,13 +1022,13 @@ final class KeyboardModel {
         }
     }
 
-    private func insertLocal(_ text: String, id: String) {
+    private func insertLocal(_ text: String, id: String, delivery: KeyboardModes.Delivery) {
         guard isVisible, proxy != nil else {
-            heldLocalResult = (id, text, Date())
+            heldLocalResult = (id, text, delivery, Date())
             KBLog.log("insert deferred id=\(KBLog.id(id)) path=local reason=keyboard-hidden len=\(text.count)")
             return
         }
-        performInsert(text, id: id, path: "local", age: 0)
+        performInsert(text, id: id, path: "local", age: 0, delivery: delivery)
     }
 
     private func insertHeldLocalResult() {
@@ -958,7 +1039,7 @@ final class KeyboardModel {
             KBLog.log("insert skipped id=\(KBLog.id(held.id)) path=local reason=stale age=\(Int(age))s (kept in history)")
             return
         }
-        performInsert(held.text, id: held.id, path: "local", age: age)
+        performInsert(held.text, id: held.id, path: "local", age: age, delivery: held.delivery)
     }
 
     private func currentLevel() -> Float {
@@ -995,14 +1076,28 @@ final class KeyboardModel {
             KBLog.log("insert deferred id=\(KBLog.id(id)) reason=no-proxy")
             return
         }
+        // The mode's output, as the app resolved it for this request (only 只複製 differs).
+        let delivery = ModeStore.shared.keyboardDelivery(for: pending.request)
         // Persist first: if we crash right after inserting, we must not insert again.
         memory.lastInsertedID = id
         memory.pending = nil
-        performInsert(text, id: id, path: "app", age: age)
+        performInsert(text, id: id, path: "app", age: age, delivery: delivery)
     }
 
-    private func performInsert(_ text: String, id: String, path: String, age: TimeInterval) {
+    private func performInsert(_ text: String, id: String, path: String, age: TimeInterval,
+                               delivery: KeyboardModes.Delivery) {
         guard let proxy else { return }
+        if delivery == .copy {
+            // 只複製: onto the clipboard (writing only; the keyboard never reads it), told in the pill.
+            UIPasteboard.general.string = text
+            if case .failed = activity { activity = .idle }
+            if activity == .processing { activity = .idle }
+            isOpeningApp = false
+            KBLog.log("copy id=\(KBLog.id(id)) path=\(path) len=\(text.count) age=\(Int(age * 1000))ms")
+            haptics.success()
+            showNotice(KeyboardFeedback.copied)
+            return
+        }
         let selected = proxy.selectedText ?? ""
         proxy.insertText(text)
         lastInsertion = (text, selected.isEmpty ? nil : selected)
@@ -1060,8 +1155,7 @@ final class KeyboardModel {
     /// `showsGlobe: false` matches Face ID iPhones, where the system draws the globe below the keyboard.
     func debugShow(availability: Availability, activity: Activity, slide: SlideIntent = .none,
                    holding: Bool = false, hasSelection: Bool = false, canUndo: Bool = false,
-                   translateLocked: Bool = false, landscape: Bool = false, warm: Bool = true,
-                   showsGlobe: Bool? = nil) {
+                   landscape: Bool = false, warm: Bool = true, showsGlobe: Bool? = nil) {
         if let showsGlobe { self.showsGlobe = showsGlobe }
         self.availability = availability
         self.activity = activity
@@ -1069,9 +1163,27 @@ final class KeyboardModel {
         self.isHolding = holding
         self.hasSelection = hasSelection
         self.canUndo = canUndo
-        self.translateLocked = translateLocked
         self.isLandscape = landscape
         self.isWarm = warm
+    }
+
+    /// Layout review only: the mode key as `state` (built with `KeyboardModes.state`), the store
+    /// untouched; the model then behaves as if it had Full Access.
+    @ObservationIgnored var debugModeState: KeyboardModes.State?
+    @ObservationIgnored var debugFullAccess = false
+
+    func debugModes(_ state: KeyboardModes.State, language: String = "en", quick: [String] = ["en", "ja", "ko"]) {
+        debugModeState = state
+        debugFullAccess = true
+        modeKeyState = state
+        translateLanguage = TranslateLanguage.find(language)
+        translateQuickLanguages = quick.map(TranslateLanguage.find)
+    }
+
+    /// Layout review only: a pill message (mode switched, copied, needs a key) that stays.
+    func debugNotice(_ feedback: KeyboardFeedback) {
+        noticeToken += 1
+        notice = feedback
     }
     #endif
 

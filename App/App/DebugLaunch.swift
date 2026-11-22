@@ -12,9 +12,19 @@ enum DebugLaunch {
     static var skipOnboarding: Bool { flag("ScriberSkipOnboarding") }
     /// Initial tab: home | dictionary | history | settings.
     static var tab: String? { string("ScriberTab") }
-    /// Open a secondary screen on launch: apiKey | keyboardSetup | experimental | customEngine
-    /// (settings tab), dictionaryEditor (dictionary tab), historyDetail (history tab).
+    /// Open a secondary screen on launch: apiKey | keyboardSetup | experimental | customEngine |
+    /// modes | mode | modeIcon | modePrompt | prompts | prompt | promptNew (settings tab),
+    /// dictionaryEditor (dictionary tab), historyDetail (history tab).
     static var screen: String? { string("ScriberScreen") }
+    /// The mode `-ScriberScreen mode|modeIcon|modePrompt` opens (default 聽寫).
+    static var modeID: String? { string("ScriberModeID") }
+    /// Scrolls the mode editor to its 輸出 section on launch (`-ScriberScrollTo output`).
+    static var scrollTarget: String? { string("ScriberScrollTo") }
+    /// The prompt `-ScriberScreen prompt` opens (default 預設).
+    static var promptID: String? { string("ScriberPromptID") }
+    /// Seed sample modes and a prompt (a custom 「會議重點」 that only copies, a custom prompt)
+    /// when there are no custom ones yet. Writes the App Group files like the user would.
+    static var demoModes: Bool { flag("ScriberDemoModes") }
     /// Show the "已開始聆聽" screen with a fake active session.
     static var listening: Bool { flag("ScriberListening") }
     /// Display-only "setup is finished" state for store screenshots: Home hides the setup steps

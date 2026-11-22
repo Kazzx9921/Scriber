@@ -414,6 +414,7 @@ final class DictationEngine {
         let receivedAt = Date()
         log.info("command \(command.rawValue, privacy: .public) \(request?.id ?? "-", privacy: .public)")
         DiagLog.log("engine", "cmd \(command.rawValue) id=\(EngineDiag.id(request?.id)) mode=\(request?.mode.rawValue ?? "-") "
+                    + "modeID=\(request?.modeID ?? "-") "
                     + "app=\(EngineDiag.appState) session=\(isSessionActive) posture=\(posture.rawValue) "
                     + "idleFor=\(lastActivityAt.map { "\(Int(receivedAt.timeIntervalSince($0)))s" } ?? "-")")
         switch command {
@@ -517,8 +518,10 @@ final class DictationEngine {
         if let capture, request == nil || request?.id == capture.request.id {
             var final = capture.request
             if let request {
-                // Slide-up translate is only known at release.
+                // Older keyboards chose translate only at release (slide-up); the mode key
+                // chooses at the start, and the stop repeats the same request.
                 final.mode = request.mode
+                if let modeID = request.modeID { final.modeID = modeID }
                 final.fieldHint = request.fieldHint
                 if request.selectedText != nil { final.selectedText = request.selectedText }
             }
@@ -530,6 +533,7 @@ final class DictationEngine {
             DiagLog.log("engine", "stop id=\(EngineDiag.id(request.id)) → retry on kept audio")
             var retry = kept.request
             retry.mode = request.mode
+            if let modeID = request.modeID { retry.modeID = modeID }
             runPipeline(url: kept.url, request: retry, origin: .keyboard)
             return
         }
@@ -823,6 +827,7 @@ final class DictationEngine {
         let settings = AppSettings.shared
         let sizeKB = ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) / 1024
         DiagLog.log("pipe", "start id=\(EngineDiag.id(request.id)) origin=\(origin.rawValue) mode=\(request.mode.rawValue) "
+                    + "modeID=\(request.modeID ?? "-") "
                     + "stt=\(settings.sttProvider.rawValue) polish=\(settings.polishProvider.rawValue) audioKB=\(sizeKB)")
         let started = Date()
         let pipeline = DictationPipeline()

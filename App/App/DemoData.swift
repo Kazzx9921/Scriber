@@ -17,6 +17,28 @@ enum DemoData {
         #endif
     }
 
+    /// `-ScriberDemoModes YES`: a custom mode that only copies, a custom prompt, and the keyboard
+    /// switched to 翻譯 once (so its recents are not empty). Only when there is no custom mode yet.
+    static func seedModes(store: ModeStore, prompts: PromptLibrary) {
+        #if DEBUG
+        guard !store.modes.contains(where: { !$0.isBuiltIn }) else { return }
+        let prompt = try? prompts.add(name: "客服回覆", kind: .dictation,
+                                      body: "- 語氣客氣、簡短，先道謝再回答。\n- 不加表情符號。")
+        store.add(DictationModeConfig(id: "demo.meeting", name: "會議重點", icon: "list.bullet",
+                                      ai: ModeAI(enabled: .custom(true), promptID: BuiltInPromptID.bullets.rawValue),
+                                      output: .copyOnly))
+        store.add(DictationModeConfig(id: "demo.support", name: "客服", icon: "message",
+                                      recognition: ModeRecognition(engine: .custom(.groqWhisperTurbo)),
+                                      textFormat: ModeTextFormat(spaceBetweenCJKAndLatin: .custom(false),
+                                                                 punctuationRule: .custom(.keep)),
+                                      ai: ModeAI(enabled: .custom(true), promptID: prompt?.id)))
+        try? store.setEnabled(false, id: BuiltInModeID.assistant.rawValue)
+        try? prompts.update(PromptTemplate(id: BuiltInPromptID.email.rawValue, name: "Email",
+                                           kind: .dictation, body: PromptLibrary.builtIn(.email).body + "\n- 結尾加一句「謝謝」。"))
+        store.noteUsed(id: BuiltInModeID.translate.rawValue)
+        #endif
+    }
+
     static var trials: [Trial] {
         #if DEBUG
         let now = Date()

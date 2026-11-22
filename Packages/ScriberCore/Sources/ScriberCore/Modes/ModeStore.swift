@@ -210,6 +210,10 @@ public final class ModeStore: @unchecked Sendable {
         recentsDefaults.set(Array(ids.prefix(Self.recentCapacity)), forKey: Self.recentsKey)
     }
 
+    /// The recently used ids as stored, most recent first. May name modes that were deleted or
+    /// disabled since; `KeyboardModes.state` skips those.
+    public var storedRecentIDs: [String] { recentsDefaults.stringArray(forKey: Self.recentsKey) ?? [] }
+
     /// Up to `limit` enabled modes, most recently used first, filled up with the default mode and
     /// then the list order. `recentModeIDs(limit: 2)` is the pair the iOS mode key toggles between.
     public func recentModeIDs(limit: Int = 2) -> [String] {

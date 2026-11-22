@@ -22,6 +22,9 @@ struct ScriberApp: App {
                 .environment(DictationEngine.shared)
                 .environment(DictionaryStore.shared)
                 .environment(HistoryStore.shared)
+                // 設定 → 模式 (docs/PRD-模式.md M4); the keyboard reads the same App Group files.
+                .environment(ModeStore.shared)
+                .environment(PromptLibrary.shared)
                 .environment(settings)
                 .environment(setup)
         }

@@ -30,17 +30,17 @@ struct KeyboardRootView: View {
         .padding(.horizontal, 14)
         .padding(.top, compact ? 6 : 12)
         .padding(.bottom, compact ? 4 : 8)
-        // The whole keyboard view: the translate key reports its frame and its gesture
-        // location in this space, and the popup overlay is drawn in it.
+        // The whole keyboard view: the mode key reports its frame and its gesture location in
+        // this space, and the popup overlay is drawn in it.
         .coordinateSpace(.named(KeyboardSpace.name))
         .background(
             GeometryReader { proxy in
                 Color.clear
-                    .onAppear { model.translatePicker.containerSize = proxy.size }
-                    .onChange(of: proxy.size) { _, size in model.translatePicker.containerSize = size }
+                    .onAppear { model.modePicker.containerSize = proxy.size }
+                    .onChange(of: proxy.size) { _, size in model.modePicker.containerSize = size }
             }
         )
-        .overlay { TranslatePopupOverlay(model: model) }
+        .overlay { ModePopupOverlay(model: model) }
     }
 }
 
@@ -49,9 +49,9 @@ struct KeyboardRootView: View {
 // Icons only; the same three slots in every state so nothing moves:
 //   ( left )        (      mic pill      )        ( ⌫ )
 // Left: 取消 while recording / processing; 關閉 while a failure waits for the user (retry or
-// fix in Scriber); otherwise the 翻譯 key (empty when text is selected, because the mic then
-// rewrites the selection). Messages never get a line of their own: they appear inside the mic
-// pill (see `KeyboardFeedback`).
+// fix in Scriber); otherwise the mode key (empty when text is selected, because the mic then
+// rewrites the selection, or when there is no other mode to switch to). Messages never get a
+// line of their own: they appear inside the mic pill (see `KeyboardFeedback`).
 
 private struct DictationPanel: View {
     let model: KeyboardModel
@@ -82,10 +82,10 @@ private struct DictationPanel: View {
             GlyphKey(symbol: "xmark", accessibility: "取消", onPress: {}, onRelease: model.cancel)
         } else if model.showsDismissKey {
             GlyphKey(symbol: "xmark", accessibility: "關閉訊息", onPress: {}, onRelease: model.dismissError)
-        } else if model.hasSelection {
+        } else if model.rewritesSelection || !model.modeKeyState.showsKey {
             Color.clear.frame(width: GlyphKey.side, height: GlyphKey.side)
         } else {
-            TranslateKey(model: model)
+            ModeKey(model: model)
         }
     }
 }

@@ -68,7 +68,7 @@ struct MicButton: View {
     /// Solid when a tap records right here (warm app or in-keyboard capture), outlined when a
     /// tap will open Scriber first.
     private var idleSymbol: String {
-        if model.hasSelection { return "wand.and.stars" }
+        if model.rewritesSelection { return "wand.and.stars" }
         return model.isWarm ? "mic.fill" : "mic"
     }
 
@@ -78,8 +78,7 @@ struct MicButton: View {
         case .processing: return "整理中"
         default:
             if let feedback = model.feedback { return feedback.spoken }
-            if model.hasSelection { return "說話改字" }
-            return model.translateLocked ? "說話翻譯成\(model.translateLanguage.displayName)" : "開始說話"
+            return model.micAccessibilityLabel
         }
     }
 

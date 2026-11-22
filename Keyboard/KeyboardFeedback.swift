@@ -2,8 +2,9 @@ import Foundation
 
 /// The keyboard's one message style: an icon and a very short label shown inside the mic pill
 /// (never a loose text line, never a layout shift). Failures from both recording paths and the
-/// keyboard's own hints (translate language, translate unavailable) all go through here. The
-/// full sentence is kept for VoiceOver; the diagnostics log gets `type` only.
+/// keyboard's own hints (mode switched, mode needs a key, copied) all go through here. The
+/// full sentence is kept for VoiceOver; the diagnostics log gets `type` only. Mode hints carry
+/// the mode's own name in the label, which is never logged.
 struct KeyboardFeedback: Hashable {
     enum Kind: String, Hashable {
         /// Neutral confirmation (e.g. the translate language). Tapping the pill dictates as usual.
@@ -130,18 +131,22 @@ struct KeyboardFeedback: Hashable {
                          spoken: "翻譯成\(languageName)", type: "translate-on")
     }
 
-    /// Tapped the translate key while it cannot work. Transient, but tapping it opens Scriber.
-    static func translateNeedsPolish() -> KeyboardFeedback {
-        KeyboardFeedback(kind: .needsSetup, symbol: "sparkles", label: "需要 AI 潤飾",
-                         spoken: "翻譯需要開啟 AI 潤飾。點一下可打開 Scriber 設定。", type: "translate-needs-polish",
-                         dismissAfter: 2.6)
+    /// Switched to a mode other than the plain one: its icon and name.
+    static func modeOn(symbol: String, name: String) -> KeyboardFeedback {
+        KeyboardFeedback(kind: .info, symbol: symbol, label: name, spoken: "模式：\(name)", type: "mode-on")
     }
 
-    static func translateNeedsKey() -> KeyboardFeedback {
+    /// Chose a mode that needs the AI without a Groq / Anthropic key. Transient, but tapping it
+    /// opens Scriber.
+    static func modeNeedsKey() -> KeyboardFeedback {
         KeyboardFeedback(kind: .needsSetup, symbol: "key.fill", label: "需要 API key",
-                         spoken: "AI 潤飾還沒有 API key。點一下可打開 Scriber 設定。", type: "translate-needs-key",
-                         dismissAfter: 2.6)
+                         spoken: "這個模式要用 AI，還沒有 Groq 或 Anthropic 的 API key。點一下可打開 Scriber 設定。",
+                         type: "mode-needs-key", dismissAfter: 2.6)
     }
+
+    /// A 「只複製」 mode finished: the text is on the clipboard, nothing was typed.
+    static let copied = KeyboardFeedback(kind: .info, symbol: "doc.on.doc", label: "已複製",
+                                         spoken: "已複製到剪貼簿", type: "copied", dismissAfter: 1.6)
 
     static let openAppFailed = KeyboardFeedback(kind: .failure, symbol: "arrow.up.forward.app", label: "請手動開啟",
                                                 spoken: "無法自動打開 Scriber，請手動開啟 Scriber App", type: "open-failed")

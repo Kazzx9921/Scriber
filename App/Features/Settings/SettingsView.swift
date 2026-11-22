@@ -1,15 +1,20 @@
 import SwiftUI
+import ScriberCore
 import ScriberShared
 
 struct SettingsView: View {
     @Environment(SettingsModel.self) private var settings
     @Environment(SetupStatus.self) private var setup
+    @Environment(ModeStore.self) private var modeStore
+    @Environment(PromptLibrary.self) private var promptLibrary
 
     @State private var keySheet: APIKeySheetItem?
     @State private var confirmRestartOnboarding = false
     @State private var debugAPIKey = DebugLaunch.screen == "apiKey"
     @State private var debugKeyboard = DebugLaunch.screen == "keyboardSetup"
     @State private var debugExperimental = DebugLaunch.screen == "experimental"
+    @State private var debugModes = ["modes", "mode", "modeIcon", "modePrompt", "prompts"].contains(DebugLaunch.screen ?? "")
+    @State private var debugPrompt: PromptEditorTarget?
 
     private var versionText: String {
         let info = Bundle.main.infoDictionary
@@ -23,6 +28,15 @@ struct SettingsView: View {
 
         NavigationStack {
             Form {
+                // MARK: Modes
+                Section {
+                    NavigationLink {
+                        ModesView()
+                    } label: {
+                        LabeledContent("模式", value: String(localized: "\(modeStore.modes.filter(\.isEnabled).count) 個"))
+                    }
+                }
+
                 speechSection
                 polishSection
                 translationSection
@@ -32,7 +46,10 @@ struct SettingsView: View {
                     Toggle("一律輸出繁體中文", isOn: $settings.forceTraditional)
                     Toggle("中英文之間加空格", isOn: $settings.spaceBetweenCJKAndLatin)
                 } header: {
-                    SectionTitle("輸出", info: "中英文之間加空格：「我用 iPhone 打字」。不加：「我用iPhone打字」。")
+                    SectionTitle("輸出") {
+                        InfoText("中英文之間加空格：「我用 iPhone 打字」。不加：「我用iPhone打字」。")
+                        InfoText("這裡是預設值，模式可以各自改。")
+                    }
                 }
 
                 // MARK: Punctuation
@@ -50,7 +67,10 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    SectionTitle("標點符號", info: LocalizedStringKey(PunctuationRule.explanation))
+                    SectionTitle("標點符號") {
+                        InfoText(LocalizedStringKey(PunctuationRule.explanation))
+                        InfoText("這裡是預設值，模式可以各自改。")
+                    }
                 }
 
                 // MARK: General
@@ -99,10 +119,20 @@ struct SettingsView: View {
             .navigationDestination(isPresented: $debugAPIKey) { APIKeyDetailView(kind: .groq) }
             .navigationDestination(isPresented: $debugKeyboard) { KeyboardSetupView() }
             .navigationDestination(isPresented: $debugExperimental) { ExperimentalSettingsView() }
+            .navigationDestination(isPresented: $debugModes) { DebugModesScreen() }
+            .sheet(item: $debugPrompt) { target in PromptEditorView(target: target, library: promptLibrary) }
             .task {
-                guard DebugLaunch.screen == "customEngine" else { return }
-                try? await Task.sleep(for: .milliseconds(500))
-                keySheet = APIKeySheetItem(kind: .custom)
+                switch DebugLaunch.screen {
+                case "customEngine":
+                    try? await Task.sleep(for: .milliseconds(500))
+                    keySheet = APIKeySheetItem(kind: .custom)
+                case "prompt", "promptNew":
+                    try? await Task.sleep(for: .milliseconds(500))
+                    debugPrompt = DebugLaunch.screen == "promptNew" ? PromptEditorTarget(promptID: nil)
+                        : PromptEditorTarget(promptID: DebugLaunch.promptID ?? BuiltInPromptID.standard.rawValue)
+                default:
+                    break
+                }
             }
             .confirmationDialog("要重新進行首次設定嗎？", isPresented: $confirmRestartOnboarding, titleVisibility: .visible) {
                 Button("重新開始") { settings.hasCompletedOnboarding = false }
@@ -130,7 +160,7 @@ struct SettingsView: View {
             }
         } header: {
             SectionTitle("語音辨識引擎") {
-                InfoText("把聲音轉成文字的服務，可以隨時切換。")
+                InfoText("把聲音轉成文字的服務，可以隨時切換。這是預設值，模式可以各自改。")
                 ForEach(STTProviderKind.allCases) { kind in
                     InfoItem(title: kind == .custom ? String(localized: "自訂") : kind.displayName, text: kind.tradeoff)
                 }
@@ -165,7 +195,7 @@ struct SettingsView: View {
             }
         } header: {
             SectionTitle("AI 潤飾") {
-                InfoText("去掉口誤和贅字、改口只留最後的說法、整理標點和段落，不會改變你的意思。翻譯和「說話改字」不用開這個，只要有填 Groq 或 Anthropic 的 key 就能用。")
+                InfoText("去掉口誤和贅字、改口只留最後的說法、整理標點和段落，不會改變你的意思。「聽寫」模式跟著這裡。翻譯、改寫和其他打開 AI 的模式不用開這個，只要有填 Groq 或 Anthropic 的 key 就能用。")
                 ForEach(PolishProviderKind.allCases) { kind in
                     InfoItem(title: kind.displayName, text: kind.detail)
                 }
@@ -204,7 +234,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            SectionTitle("翻譯", info: "在鍵盤點「翻譯」鍵，說的話會翻成上面的語言。長按「翻譯」鍵，可以在三個常用語言之間切換。")
+            SectionTitle("翻譯", info: "「翻譯」模式翻成上面的語言。在鍵盤長按模式鍵，可以直接選三個常用語言。")
         }
     }
 
@@ -223,3 +253,26 @@ struct SettingsView: View {
         return count == 0 ? String(localized: "未設定") : String(localized: "\(count) 組")
     }
 }
+
+#if DEBUG
+/// `-ScriberScreen modes|mode|modeIcon|modePrompt|prompts`: opens the screen directly (layout review).
+private struct DebugModesScreen: View {
+    @Environment(ModeStore.self) private var store
+
+    var body: some View {
+        let id = DebugLaunch.modeID ?? BuiltInModeID.dictate.rawValue
+        switch DebugLaunch.screen {
+        case "mode": ModeEditorView(modeID: id)
+        case "modePrompt": PromptPickerView(modeID: id)
+        case "prompts": PromptLibraryView()
+        case "modeIcon":
+            ModeIconPicker(selection: Binding(get: { store.mode(id: id)?.icon ?? "mic" }, set: { _ in }))
+        default: ModesView()
+        }
+    }
+}
+#else
+private struct DebugModesScreen: View {
+    var body: some View { EmptyView() }
+}
+#endif

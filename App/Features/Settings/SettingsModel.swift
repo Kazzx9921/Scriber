@@ -183,6 +183,23 @@ final class SettingsModel {
         translateQuickLanguageIDs = ids
     }
 
+    // MARK: Modes
+
+    /// The global settings as the defaults every mode follows (設定 = 預設值, docs/PRD-模式.md §9.4),
+    /// built from the observed copies so the mode screens update when a setting changes.
+    /// iOS has no real-time transcription, so that default stays off.
+    var modeDefaults: ModeDefaults {
+        var defaults = ModeDefaults(sttProvider: sttProvider, polishProvider: polishProvider,
+                                    forceTraditional: forceTraditional, spaceBetweenCJKAndLatin: spaceBetweenCJKAndLatin,
+                                    translateTarget: TranslateLanguage.find(translateLanguageID).promptName)
+        defaults.punctuationRule = punctuationRule
+        defaults.punctuationLimit = punctuationLimit
+        return defaults
+    }
+
+    /// The AI step of a mode can run (Groq or Anthropic).
+    var hasLLMKey: Bool { hasKey(.groq) || hasKey(.anthropic) }
+
     // MARK: Custom engine
 
     /// Display name of the custom engine ("自訂" until it has one).

@@ -25,7 +25,8 @@ final class InKeyboardCapture {
         /// The track ended by itself (call, Siri, another app took the microphone): treat as stop.
         case endedByItself
         case processing
-        case finished(DictationRequest, text: String)
+        /// `output`: the mode's output as the pipeline resolved it (`只複製` copies instead of typing).
+        case finished(DictationRequest, text: String, output: ModeOutput)
         case failed(DictationRequest, message: String, retryable: Bool)
     }
 
@@ -82,8 +83,9 @@ final class InKeyboardCapture {
 
     // MARK: Availability
 
-    /// Why the path can or cannot serve the next tap. `checkKey` reads the keychain (a few ms).
-    func availability(hasFullAccess: Bool, checkKey: Bool) -> (available: Bool, reason: String) {
+    /// Why the path can or cannot serve the next tap. `checkKey` reads the keychain (a few ms) for
+    /// `engine`'s key: the engine the request's mode records with (nil: the global engine).
+    func availability(hasFullAccess: Bool, checkKey: Bool, engine: STTProviderKind? = nil) -> (available: Bool, reason: String) {
         guard AppSettings.shared.inKeyboardCapture else { return (false, "flag-off") }
         guard #available(iOS 26, *) else { return (false, "ios<26") }
         guard hasFullAccess else { return (false, "no-full-access") }
@@ -101,7 +103,9 @@ final class InKeyboardCapture {
         if headroom != 0, headroom < Self.requiredHeadroom {
             return (false, String(format: "memory headroom=%.1fMB", Double(headroom) / 1_048_576))
         }
-        if checkKey, !Self.sttKeyVisible() { return (false, "no-stt-key-in-shared-keychain") }
+        if checkKey, !Self.sttKeyVisible(engine ?? AppSettings.shared.sttProvider) {
+            return (false, "no-stt-key-in-shared-keychain")
+        }
         return (true, "ok")
     }
 
@@ -119,9 +123,9 @@ final class InKeyboardCapture {
         return (published ?? own, published, own)
     }
 
-    private static func sttKeyVisible() -> Bool {
+    private static func sttKeyVisible(_ engine: STTProviderKind) -> Bool {
         let kind: APIKeyKind
-        switch AppSettings.shared.sttProvider {
+        switch engine {
         case .elevenLabsScribe: kind = .elevenLabs
         case .groqWhisperLarge, .groqWhisperTurbo: kind = .groq
         case .custom: kind = .custom
@@ -142,7 +146,7 @@ final class InKeyboardCapture {
         pageReadyAt = nil
         micStartedAt = nil
         tappedAt = Date()
-        KBLog.log("local start id=\(KBLog.id(request.id)) mode=\(request.mode.rawValue) \(KBLog.memory)")
+        KBLog.log("local start id=\(KBLog.id(request.id)) mode=\(request.mode.rawValue) modeID=\(request.modeID ?? "-") \(KBLog.memory)")
         // The zh-TW tables load lazily; warm them while the user talks.
         Task.detached(priority: .utility) { ZhTW.prewarm() }
 
@@ -374,7 +378,7 @@ final class InKeyboardCapture {
         self.request = nil
         try? FileManager.default.removeItem(at: url)
         let total = KBLog.millis(since: started)
-        KBLog.log("local pipeline ok id=\(KBLog.id(request.id)) stt=\(result.sttMillis)ms polish=\(result.polishMillis)ms total=\(total)ms len=\(result.finalText.count) stt=\(result.sttProvider.rawValue) polish=\(result.polishProvider.rawValue) \(KBLog.memory)")
+        KBLog.log("local pipeline ok id=\(KBLog.id(request.id)) stt=\(result.sttMillis)ms polish=\(result.polishMillis)ms total=\(total)ms len=\(result.finalText.count) stt=\(result.sttProvider.rawValue) polish=\(result.polishProvider.rawValue) modeID=\(result.modeID) output=\(result.output.rawValue) \(KBLog.memory)")
         if AppSettings.shared.saveHistory {
             let item = HistoryItem(mode: request.mode, rawTranscript: result.rawTranscript, finalText: result.finalText,
                                    sttProvider: result.sttProvider, polishProvider: result.polishProvider, totalMillis: total)
@@ -385,7 +389,7 @@ final class InKeyboardCapture {
             lastCountedID = request.id
             UsageStats.record(text: result.finalText, speakingSeconds: duration)
         }
-        onEvent?(.finished(request, text: result.finalText))
+        onEvent?(.finished(request, text: result.finalText, output: result.output))
     }
 
     private func pipelineFailed(_ error: Error, url: URL, request: DictationRequest, duration: TimeInterval) {
