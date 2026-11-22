@@ -151,6 +151,9 @@ struct SettingsView: View {
                             onSelect: { select(kind) }) {
                     KeyStatusButton(isSet: settings.hasKey(kind.requiredKey)) { openKey(kind.requiredKey) }
                 }
+                if kind == .elevenLabsScribe, settings.sttProvider == .elevenLabsScribe {
+                    RealtimeToggleRow()
+                }
             }
             ProviderRow(title: settings.customEngineName,
                         tag: settings.isCustomEngineConfigured ? settings.customSTTModel : STTProviderKind.custom.tag,
@@ -251,6 +254,27 @@ struct SettingsView: View {
     private var keyCountText: String {
         let count = APIKeyKind.allCases.filter { settings.hasKey($0) }.count
         return count == 0 ? String(localized: "未設定") : String(localized: "\(count) 組")
+    }
+}
+
+/// 邊講邊辨識 under Scribe v3 (the only engine with a real-time model), placed like the Mac's
+/// 即時顯示文字. On iOS nothing is shown while speaking: the text is just ready sooner.
+private struct RealtimeToggleRow: View {
+    @Environment(SettingsModel.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+        Toggle(isOn: $settings.realtimeEnabled) {
+            HStack(spacing: 2) {
+                Text("邊講邊辨識")
+                InfoButton {
+                    InfoText("說話時就先辨識，停止後更快出字。")
+                    InfoText("只有 Scribe v3 支援。錄音時會一直上傳聲音，比較耗流量，計價也跟一般辨識略有不同。")
+                }
+            }
+        }
+        // Under the engine's name (checkmark column 18 pt + 12 pt spacing in `ProviderRow`).
+        .padding(.leading, 30)
     }
 }
 

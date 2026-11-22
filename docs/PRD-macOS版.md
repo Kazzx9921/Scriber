@@ -342,6 +342,8 @@ Kazen 看完 iOS 版的意見（太亂、說明文字太多、零散的提示文
 - 文件與 SDK 不一致的地方：SDK 註解寫 keyterm 每個最多 20 字，文件寫沒有單獨上限，實測 32 字可以，所以照文件；JS SDK 有一個 `final_transcript` 事件，文件說公開 API 不會送，收到時只當成顯示用的文字。
 
 #### 之後做 iOS 版要注意
+（2026-11-22 補：iOS 已經接上，但只用來加快出字、不顯示文字，預設開；Mac 這邊沒變。見 `PRD.md` §11「邊講邊辨識」。）
+
 核心的 `RealtimeSTTSession` 只用 Foundation（`URLSessionWebSocketTask`），iOS 可以直接用，這一輪沒有接到 iOS：
 - **主 App 在背景錄音**：鍵盤叫 App 錄音時 App 在背景，WebSocket 在背景能不能持續送、被系統暫停時怎麼辦，都要另外驗證；連線斷掉時要確保一樣改用上傳辨識（Mac 的做法可以照搬）。
 - **鍵盤沒有空間顯示即時文字**，而且文字要從 App 傳到鍵盤（目前的 `SessionState` 只有最終結果），要另外設計顯示方式和傳遞頻率。

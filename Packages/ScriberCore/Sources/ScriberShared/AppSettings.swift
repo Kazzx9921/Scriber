@@ -36,6 +36,19 @@ public enum StandbyMode: String, CaseIterable, Codable, Sendable, Identifiable {
     public var id: String { rawValue }
 }
 
+/// Which app a setting's default is for, where the two differ (`AppSettings.realtimeDefault`).
+public enum SettingsPlatform: String, Sendable {
+    case iOS, macOS
+
+    public static var current: SettingsPlatform {
+        #if os(macOS)
+        return .macOS
+        #else
+        return .iOS
+        #endif
+    }
+}
+
 public struct AppSettings: Sendable {
     public static let shared = AppSettings()
     private var d: UserDefaults { AppGroup.defaults }
@@ -93,12 +106,30 @@ public struct AppSettings: Sendable {
 
     // MARK: Real-time transcription
 
-    /// Stream audio to a real-time engine while speaking (ElevenLabs Scribe v3 Live) and show the
-    /// text as it is recognized. Only applies when the selected engine supports it; falls back to
-    /// the normal upload-after-speaking path otherwise.
+    /// Stream audio to a real-time engine while speaking (ElevenLabs Scribe v3 Live). Only applies
+    /// when the engine supports it; falls back to the normal upload-after-speaking path otherwise.
+    /// macOS (「即時顯示文字」): the HUD shows the text as it is recognized; off unless turned on.
+    /// iOS (「邊講邊辨識」): nothing is shown, the text is just ready sooner after stopping; on
+    /// unless turned off. Each device keeps its own value (the App Group is per device).
     public var realtimeEnabled: Bool {
-        get { d.object(forKey: "realtimeEnabled") as? Bool ?? false }
-        nonmutating set { d.set(newValue, forKey: "realtimeEnabled") }
+        get { Self.realtimeEnabled(in: d) }
+        nonmutating set { d.set(newValue, forKey: Self.realtimeEnabledKey) }
+    }
+
+    static let realtimeEnabledKey = "realtimeEnabled"
+
+    /// The value stored in `defaults`, or `realtimeDefault(for:)` when there is none (every iOS
+    /// install before this setting existed, and a Mac that never touched the switch).
+    public static func realtimeEnabled(in defaults: UserDefaults, platform: SettingsPlatform = .current) -> Bool {
+        defaults.object(forKey: realtimeEnabledKey) as? Bool ?? realtimeDefault(for: platform)
+    }
+
+    /// iOS: on (a speed-up only). macOS: off, as it has always been.
+    public static func realtimeDefault(for platform: SettingsPlatform) -> Bool {
+        switch platform {
+        case .iOS: return true
+        case .macOS: return false
+        }
     }
 
     // MARK: Experimental (being verified on device)

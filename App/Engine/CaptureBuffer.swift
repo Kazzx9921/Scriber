@@ -2,7 +2,8 @@ import AVFoundation
 
 // Platform-neutral half of the recorder (no AVAudioSession, no UIKit) so it can be exercised
 // on macOS: converts tap buffers to 16 kHz mono, keeps a short pre-roll, meters the level and
-// writes clips. Fed from the AVAudioEngine tap thread; begin/end are called from the main thread.
+// writes clips — and, for 邊講邊辨識, hands the same 16 kHz samples to a real-time session
+// (`attachStream`). Fed from the AVAudioEngine tap thread; begin/end are called from the main thread.
 
 struct CapturedClip: Sendable {
     let url: URL
@@ -51,6 +52,21 @@ final class CaptureBuffer: @unchecked Sendable {
     /// Called on the ingest thread while a clip is open, at most ~30 times a second.
     var onLevel: (@Sendable (Float) -> Void)?
 
+    /// A copy of the clip's 16 kHz samples for a real-time session (邊講邊辨識): exactly what is
+    /// written to the file, pre-roll included, in order. `beginClip(holdingStream: true)` keeps
+    /// them until `attachStream` (so the clip never waits for the session to be made), then they
+    /// go to the sink as they are written. Ends with the clip.
+    private enum Stream {
+        case off
+        case holding([[Float]], frames: Int)
+        case attached(@Sendable ([Float]) -> Void)
+        /// Held too long without a sink: the stream is incomplete and must not be used.
+        case broken
+    }
+
+    /// Safety bound on samples held before `attachStream` (normally a few milliseconds' worth).
+    static let maxHeldStreamSeconds: Double = 15
+
     private let lock = NSLock()
     // Guarded by `lock`.
     private var converter: AVAudioConverter?
@@ -67,6 +83,7 @@ final class CaptureBuffer: @unchecked Sendable {
     private var writeFailed = false
     private var clipOpenedAt: UInt64 = 0
     private var timing = ClipTiming()
+    private var stream = Stream.off
 
     var isCapturing: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -96,6 +113,7 @@ final class CaptureBuffer: @unchecked Sendable {
             } catch {
                 writeFailed = true
             }
+            forwardToStream(converted)
             peak = max(peak, level)
             smoothed = level > smoothed ? level : smoothed * 0.75 + level * 0.25
             let now = DispatchTime.now().uptimeNanoseconds
@@ -122,8 +140,9 @@ final class CaptureBuffer: @unchecked Sendable {
 
     /// Opens a clip file next to `baseURL` (extension replaced) and writes the pre-roll into it.
     /// Prefers AAC in m4a; falls back to 16-bit wav if the encoder is unavailable.
+    /// `holdingStream`: also keep the clip's samples for `attachStream` (real-time session).
     @discardableResult
-    func beginClip(baseURL: URL) throws -> URL {
+    func beginClip(baseURL: URL, holdingStream: Bool = false) throws -> URL {
         // Creating the file sets up the AAC encoder, which can take a few hundred milliseconds
         // (180–370 ms on a process's first clip in the simulator, ≈15 ms after; see
         // `prewarmEncoder`). Do it before taking the lock:
@@ -144,9 +163,11 @@ final class CaptureBuffer: @unchecked Sendable {
         timing = ClipTiming()
         timing.fileCreateMillis = createMillis
         clipOpenedAt = DispatchTime.now().uptimeNanoseconds
+        stream = holdingStream ? .holding([], frames: 0) : .off
         for chunk in preRoll {
             if (try? newFile.write(from: chunk)) != nil { fileFrames += AVAudioFramePosition(chunk.frameLength) }
             if !timing.preRollHadSignal, Self.rms(of: chunk) > Self.signalFloor { timing.preRollHadSignal = true }
+            forwardToStream(chunk)
         }
         timing.preRollMillis = Int(Double(preRollFrames) / Self.sampleRate * 1000)
         preRoll.removeAll()
@@ -172,6 +193,27 @@ final class CaptureBuffer: @unchecked Sendable {
         return clip
     }
 
+    /// Hands the open clip's samples to `sink`: first everything held since `beginClip`, then each
+    /// buffer as it is written (on the ingest thread, under the buffer's lock: `sink` must be
+    /// quick and must not call back into this object). False when there is nothing to attach to
+    /// (no clip, not holding, or the hold overflowed); the caller then drops its session.
+    func attachStream(_ sink: @escaping @Sendable ([Float]) -> Void) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard file != nil, case .holding(let held, _) = stream else {
+            stream = .off
+            return false
+        }
+        for samples in held { sink(samples) }
+        stream = .attached(sink)
+        return true
+    }
+
+    /// Stops copying samples for the stream (the clip itself goes on).
+    func detachStream() {
+        lock.lock(); defer { lock.unlock() }
+        stream = .off
+    }
+
     /// Returns the timing of the discarded clip (nil if none was open), for the log.
     @discardableResult
     func discardClip() -> ClipTiming? {
@@ -193,6 +235,29 @@ final class CaptureBuffer: @unchecked Sendable {
         }
         file = nil
         fileURL = nil
+        stream = .off
+    }
+
+    /// The samples just written to the clip, to the real-time stream (lock held).
+    private func forwardToStream(_ buffer: AVAudioPCMBuffer) {
+        switch stream {
+        case .off, .broken:
+            return
+        case .attached(let sink):
+            if let samples = Self.samples(of: buffer) { sink(samples) }
+        case .holding(var held, let frames):
+            guard let samples = Self.samples(of: buffer) else { return }
+            let total = frames + samples.count
+            stream = .broken // also releases the enum's copy, so the append below does not copy
+            guard Double(total) <= Self.maxHeldStreamSeconds * Self.sampleRate else { return }
+            held.append(samples)
+            stream = .holding(held, frames: total)
+        }
+    }
+
+    private static func samples(of buffer: AVAudioPCMBuffer) -> [Float]? {
+        guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return nil }
+        return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
     }
 
     private func appendPreRoll(_ chunk: AVAudioPCMBuffer) {

@@ -17,7 +17,8 @@ public struct ModeDefaults: Sendable, Equatable {
     public var translateTarget: String
     /// STT language hint. Mixed zh/en speech is the main use case, and Whisper needs "zh" to stay in Chinese.
     public var languageCode: String? = "zh"
-    /// 即時顯示文字 (only applies with ElevenLabs Scribe).
+    /// Real-time transcription (only applies with ElevenLabs Scribe): Mac 即時顯示文字, iOS 邊講邊辨識.
+    /// `init(settings:)` takes the platform's default from `AppSettings.realtimeEnabled`.
     public var realtimeEnabled: Bool = false
     /// Transcripts with at most this many units (CJK characters or Latin words) skip the LLM.
     public var shortTranscriptLimit: Int = 5

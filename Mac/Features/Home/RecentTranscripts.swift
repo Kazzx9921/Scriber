@@ -43,7 +43,7 @@ struct RecentTranscripts: View {
         } else {
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Divider().padding(.leading, 58) }
+                    if index > 0 { Divider().padding(.leading, 12) }
                     TranscriptRow(item: item, copied: copiedID == item.id,
                                   onCopy: { copy(item.finalText, id: item.id) },
                                   onCopyRaw: { copy(item.rawTranscript, id: item.id) },
@@ -87,7 +87,8 @@ struct RecentTranscripts: View {
     }
 }
 
-/// One transcript: mode mark, when, two lines of text; hover actions on the right.
+/// One transcript: when (plus the mode's name when it is not plain dictation), two lines of text;
+/// hover actions on the right. No leading icon: nearly every row is dictation, so it said nothing.
 struct TranscriptRow: View {
     let item: HistoryItem
     let copied: Bool
@@ -102,12 +103,6 @@ struct TranscriptRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: item.mode.symbol)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.accentText)
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(Theme.accent.opacity(0.13)))
-                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     if copied {

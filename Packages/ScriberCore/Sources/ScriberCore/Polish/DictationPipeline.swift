@@ -55,7 +55,8 @@ public struct DictationPipeline: Sendable {
     private let makeSTT: @Sendable (STTProviderKind) throws -> any STTProvider
     private let makePolish: @Sendable (PolishProviderKind) throws -> (any PolishProvider)?
     /// Diagnostics: mode id, task, provider kinds, context kinds and their lengths. Never content.
-    private let log: @Sendable (String) -> Void
+    /// Also the real-time path line (`run(audioFile:request:realtime:backoff:)`).
+    let log: @Sendable (String) -> Void
 
     public init(settings: AppSettings = .shared, keys: KeychainStore = .shared, dictionary: DictionaryStore = .shared,
                 modes: ModeStore = .shared, prompts: PromptLibrary = .shared) {

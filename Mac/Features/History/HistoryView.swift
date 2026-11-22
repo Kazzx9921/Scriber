@@ -102,7 +102,7 @@ struct HistoryView: View {
                 ForEach(days, id: \.title) { day in
                     Section {
                         ForEach(Array(day.items.enumerated()), id: \.element.id) { index, item in
-                            if index > 0 { Divider().padding(.leading, 58) }
+                            if index > 0 { Divider().padding(.leading, 12) }
                             TranscriptRow(item: item, copied: copiedID == item.id, timeText: TimeLabel.clock(item.date),
                                           lineLimit: 3,
                                           onCopy: { copy(item.finalText, id: item.id) },

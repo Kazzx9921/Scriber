@@ -374,8 +374,18 @@ final class AudioRecorder {
 
     // MARK: Clips
 
-    func beginClip(baseURL: URL) throws -> URL {
-        try capture.beginClip(baseURL: baseURL)
+    /// `holdingStream`: keep the clip's 16 kHz samples for `attachStream` (邊講邊辨識).
+    func beginClip(baseURL: URL, holdingStream: Bool = false) throws -> URL {
+        try capture.beginClip(baseURL: baseURL, holdingStream: holdingStream)
+    }
+
+    /// The open clip's samples (held ones first) go to `sink` too. See `CaptureBuffer.attachStream`.
+    func attachStream(_ sink: @escaping @Sendable ([Float]) -> Void) -> Bool {
+        capture.attachStream(sink)
+    }
+
+    func detachStream() {
+        capture.detachStream()
     }
 
     func endClip() -> CapturedClip? {

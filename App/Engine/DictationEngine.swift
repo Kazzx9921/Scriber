@@ -28,6 +28,17 @@ import ScriberShared
 ///     so `.outputOnly` behaves like `.off` until the user retries it in Settings.
 /// Standby ends after `standbyMinutes` without a dictation, on audio that cannot be revived, or
 /// when the mode is turned off. Every step is written to `DiagLog`.
+///
+/// ## 邊講邊辨識 (real-time transcription, docs/PRD.md §11)
+/// When the dictation's mode resolves to ElevenLabs Scribe v3 with the setting on (the iOS
+/// default) and a key, a `RealtimeDictation` streams the clip's 16 kHz samples (the same ones the
+/// file gets, `CaptureBuffer.attachStream`) to Scribe v3 Live while recording. The clip opens
+/// first and the start is acknowledged before the session is made; connecting runs in the
+/// background, so recording never waits for the network. Nothing is shown while speaking. At stop
+/// the final commit goes out at once and the pipeline uses the streamed transcript; on any
+/// real-time failure, an empty transcript or a timeout it uploads the recorded file instead
+/// (`DictationPipeline.run(audioFile:request:realtime:backoff:)`). Cancel and discarded clips
+/// close the socket; a retry always uploads the kept file. In-keyboard capture stays on the upload.
 @MainActor
 @Observable
 final class DictationEngine {
@@ -111,12 +122,15 @@ final class DictationEngine {
         var fromLaunch: Bool
         /// When the start command (or the URL that carried it) reached this process.
         var receivedAt: Date
+        /// 邊講邊辨識 session riding along, if it applies to this dictation.
+        var realtime: RealtimeDictation?
     }
     private struct Job {
         var request: DictationRequest
         var origin: Origin
         var url: URL
         var task: Task<Void, Never>
+        var realtime: RealtimeDictation?
     }
     private struct LaunchContext {
         var at: Date
@@ -147,6 +161,8 @@ final class DictationEngine {
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     /// Spoken length of the last clip sent to the pipeline (also the one kept for retry), for `UsageStats`.
     @ObservationIgnored private var lastClipSeconds: Double = 0
+    /// 3 real-time failures in a row → upload only for 10 minutes (process lifetime).
+    @ObservationIgnored private let realtimeBackoff = RealtimeBackoff()
 
     private init() {
         files.purge()
@@ -165,6 +181,7 @@ final class DictationEngine {
                     + "effective=\(effectiveStandbyMode.rawValue) keepAliveCat=\(StandbyMemory.keepAliveCategory.rawValue) "
                     + "refused=\(outputOnlyRefusal != nil) autoReturn=\(settings.autoReturn) "
                     + "target=\(AutoReturnCatalog.selectedID ?? "none") kbCapture=\(settings.inKeyboardCapture) "
+                    + "realtime=\(settings.realtimeEnabled) stt=\(settings.sttProvider.rawValue) "
                     + "disk=\(shared.phase.rawValue)/\(EngineDiag.id(shared.requestID)) app=\(EngineDiag.appState)")
 
         // A previous process that died mid-request left an orphaned phase behind.
@@ -296,6 +313,7 @@ final class DictationEngine {
         isSessionActive = false
         sessionExpiresAt = nil
         if let capture, capture.origin == .keyboard {
+            capture.realtime?.cancel()
             let timing = recorder.discardClip()
             DiagLog.log("engine", "capture discarded id=\(EngineDiag.id(capture.request.id)) reason=sessionEnd \(timing?.summary ?? "")")
             self.capture = nil
@@ -583,7 +601,11 @@ final class DictationEngine {
                               receivedAt: Date = Date()) throws {
         if let kept { files.delete(kept.url); self.kept = nil }
         canRetry = false
-        let url = try recorder.beginClip(baseURL: files.newClipBaseURL())
+        // 邊講邊辨識: whether to try is known from settings and modes alone (no key, no network),
+        // so the clip can keep its samples until the session exists.
+        let resolved = DictationPipeline().resolve(request)
+        let realtimeSkip = RealtimeDictation.skipReason(resolved, backoff: realtimeBackoff)
+        let url = try recorder.beginClip(baseURL: files.newClipBaseURL(), holdingStream: realtimeSkip == nil)
         let capture = Capture(request: request, origin: origin, url: url, startedAt: Date(),
                               fromLaunch: fromLaunch, receivedAt: receivedAt)
         self.capture = capture
@@ -591,6 +613,8 @@ final class DictationEngine {
         level = 0
         lastActivityAt = Date()
         if origin == .keyboard { publish(.recording, requestID: request.id) }
+        // Only now (recording and acknowledged): read the key and start connecting.
+        self.capture?.realtime = startRealtime(for: request, resolved: resolved, skip: realtimeSkip)
 
         maxDurationWork?.cancel()
         let token = capture.token
@@ -625,29 +649,36 @@ final class DictationEngine {
         }
 
         guard let clip else {
+            capture.realtime?.cancel()
             fail(request, origin: capture.origin, message: "錄音失敗，請再試一次", retryable: false, deleteURL: capture.url)
             settleAudioAfterCapture(context: "captureEnd")
             return
         }
         if clip.spokenDuration < Self.minimumSpeechSeconds {
+            capture.realtime?.cancel()
             fail(request, origin: capture.origin, message: "說話時間太短", retryable: false, deleteURL: clip.url)
             settleAudioAfterCapture(context: "captureEnd")
             return
         }
         if clip.peakLevel < Self.silenceLevel {
+            capture.realtime?.cancel()
             fail(request, origin: capture.origin, message: "沒有聽到聲音", retryable: false, deleteURL: clip.url)
             settleAudioAfterCapture(context: "captureEnd")
             return
         }
+        // 邊講邊辨識: the rest of the audio and the final commit go out now; the answer usually
+        // arrives while the pipeline starts.
+        capture.realtime?.stop()
         // Pipeline first: a standby that cannot settle then ends *after* the job instead of
         // killing the heartbeat while the keyboard waits for the result.
         lastClipSeconds = clip.spokenDuration
-        runPipeline(url: clip.url, request: request, origin: capture.origin)
+        runPipeline(url: clip.url, request: request, origin: capture.origin, realtime: capture.realtime)
         settleAudioAfterCapture(context: "captureEnd")
     }
 
     private func discardCapture(reason: String) {
         maxDurationWork?.cancel()
+        capture?.realtime?.cancel()
         let timing = recorder.discardClip()
         if let capture {
             DiagLog.log("engine", "capture discarded id=\(EngineDiag.id(capture.request.id)) reason=\(reason) \(timing?.summary ?? "")")
@@ -656,6 +687,42 @@ final class DictationEngine {
         channel.writeLevel(0)
         level = 0
         lastActivityAt = Date()
+    }
+
+    // MARK: 邊講邊辨識
+
+    /// A started session fed by the open clip, or nil (reason logged; the upload runs at stop).
+    /// The clip is already recording: connecting happens on the session's queue and never holds
+    /// up the microphone; a session that cannot connect in time just fails into the upload.
+    private func startRealtime(for request: DictationRequest, resolved: ResolvedModeConfig,
+                               skip: RealtimeDictation.Skip?) -> RealtimeDictation? {
+        let tag = EngineDiag.id(request.id)
+        if let skip {
+            DiagLog.log("engine", "id=\(tag) realtime off reason=\(skip.logDescription) → upload")
+            return nil
+        }
+        let started = Date()
+        switch RealtimeDictation.start(resolved: resolved, backoff: realtimeBackoff, logTag: tag) {
+        case .failure(let skip):
+            recorder.detachStream()
+            DiagLog.log("engine", "id=\(tag) realtime off reason=\(skip.logDescription) → upload")
+            return nil
+        case .success(let run):
+            guard recorder.attachStream(Self.streamSink(run)) else {
+                run.cancel()
+                DiagLog.log("engine", "id=\(tag) realtime off reason=stream-not-attached → upload")
+                return nil
+            }
+            DiagLog.log("engine", "id=\(tag) realtime on lang=\(resolved.languageCode ?? "auto") "
+                        + "setupMs=\(EngineDiag.millis(since: started)) app=\(EngineDiag.appState)")
+            return run
+        }
+    }
+
+    /// Runs on the audio tap thread: built outside the main actor so it never inherits its
+    /// isolation (same reason as `AudioRecorder.tapBlock`).
+    nonisolated private static func streamSink(_ run: RealtimeDictation) -> @Sendable ([Float]) -> Void {
+        { samples in run.append(samples: samples) }
     }
 
     // MARK: Audio posture
@@ -816,7 +883,8 @@ final class DictationEngine {
 
     // MARK: Pipeline
 
-    private func runPipeline(url: URL, request: DictationRequest, origin: Origin) {
+    /// `realtime`: the session that streamed this clip (nil for a retry: the kept file is uploaded).
+    private func runPipeline(url: URL, request: DictationRequest, origin: Origin, realtime: RealtimeDictation? = nil) {
         cancelJob()
         kept = nil
         canRetry = false
@@ -828,20 +896,23 @@ final class DictationEngine {
         let sizeKB = ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) / 1024
         DiagLog.log("pipe", "start id=\(EngineDiag.id(request.id)) origin=\(origin.rawValue) mode=\(request.mode.rawValue) "
                     + "modeID=\(request.modeID ?? "-") "
-                    + "stt=\(settings.sttProvider.rawValue) polish=\(settings.polishProvider.rawValue) audioKB=\(sizeKB)")
+                    + "stt=\(settings.sttProvider.rawValue) polish=\(settings.polishProvider.rawValue) audioKB=\(sizeKB) "
+                    + "realtime=\(realtime != nil)")
         let started = Date()
         let pipeline = DictationPipeline()
+        let backoff = realtimeBackoff
         let task = Task { [weak self] in
             let activity = BackgroundActivity(name: "Scriber.dictation")
             defer { activity.end() }
             do {
-                let result = try await pipeline.run(audioFile: url, request: request)
+                // Exactly one path produces the text: the streamed transcript, or the file.
+                let result = try await pipeline.run(audioFile: url, request: request, realtime: realtime, backoff: backoff)
                 self?.pipelineSucceeded(result, request: request, url: url, started: started)
             } catch {
                 self?.pipelineFailed(error, request: request, url: url, started: started)
             }
         }
-        job = Job(request: request, origin: origin, url: url, task: task)
+        job = Job(request: request, origin: origin, url: url, task: task, realtime: realtime)
     }
 
     private func pipelineSucceeded(_ result: PipelineResult, request: DictationRequest, url: URL, started: Date) {
@@ -855,6 +926,7 @@ final class DictationEngine {
         lastActivityAt = Date()
         let text = result.finalText
         DiagLog.log("pipe", "done id=\(EngineDiag.id(request.id)) stt=\(result.sttProvider.rawValue) polish=\(result.polishProvider.rawValue) "
+                    + "realtime=\(result.usedRealtime) "
                     + "sttMs=\(result.sttMillis) polishMs=\(result.polishMillis) totalMs=\(EngineDiag.millis(since: started)) "
                     + "outChars=\(text.count)")
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -903,6 +975,7 @@ final class DictationEngine {
 
     private func cancelJob() {
         guard let job else { return }
+        job.realtime?.cancel()
         job.task.cancel()
         files.delete(job.url)
         self.job = nil

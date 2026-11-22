@@ -98,3 +98,39 @@
 12. [ ] **App 的模式頁**：新增、改名、換圖示、複製、刪除、拖曳排序、還原預設、提示詞新增／編輯／複製／刪除／還原，各做一次，回到鍵盤看結果。
 
 紀錄裡會看到：`modes current=… partner=…`、`mode builtin.dictate→builtin.translate via=tap`、`mode picker open options=6`、`copy id=… len=…`、`tap: start … modeID=…`。沒有名稱和內容。
+
+## 7. 邊講邊辨識（iOS 即時辨識，2026-11-22）
+
+模擬器只看過設定頁，下面都還沒在手機上試過。需要 ElevenLabs 的 key、引擎選 Scribe v3。說話時畫面**不會**出現字，這是對的；要看的是「說完到出字」有沒有變快、會不會掉字。先做前 6 項。
+
+1. [ ] **開關**：設定 → 語音辨識引擎，Scribe v3 下面有「邊講邊辨識」，預設是開的；點「?」看說明。改選 Whisper，這一列消失；選回 Scribe v3 又出現。
+2. [ ] **有沒有變快**：在備忘錄用鍵盤（靜音待命）說一句約 10 秒的話 → 點結束 → 感覺出字的速度。再到設定關掉開關，說同樣長度的話比較一次，然後打開。各做 3 次。紀錄裡比 `pipe done … totalMs=`（開著時 `realtime=true`，關著時 `realtime=false`）。
+3. [ ] **跳 App 的那一次**（待命方式選「講完即關」，或待命已結束）：點麥克風 → 跳到 Scriber → 回到備忘錄 → 說完。看第一個字有沒有被吃掉、有沒有出字。紀錄要有 `realtime on` 和 `path=realtime`。
+4. [ ] **長一點**：說 60 秒左右（中間正常停頓）。文字要完整，沒有重複、沒有少一段。紀錄 `path=realtime … commits=` 應該是 2 以上。
+5. [ ] **沒有網路**：開飛航模式說一句 → 跟以前一樣顯示網路失敗和重試 → 關飛航、按重試 → 文字插入。紀錄：`realtime failed while recording reason=handshake …` → `path=batch reason=failed-while-recording …` → `pipe failed … retryable=true`；重試是 `pipe start … realtime=false`。
+6. [ ] **錄到一半換網路**：在 Wi-Fi 下開始說，說到一半到控制中心關掉 Wi-Fi（改走行動網路），說完。一定要有文字（可能慢一點）。紀錄：`realtime failed while recording reason=closed` 或 `reason=transport` 或 `reason=stalled` → `path=batch` → `pipe done … realtime=false`。如果沒斷，會是 `path=realtime`，也可以。
+7. [ ] **錄音中切到背景**：在 Scriber 首頁的試用區開始錄 → 回主畫面或鎖屏 → 說幾句 → 回到 Scriber 結束。要有文字。看 `path=` 是哪一種。
+8. [ ] **取消**：錄音中在鍵盤取消 → 不出字。紀錄 `capture discarded …`、`[rt] … cancelled phase=streaming`，之後沒有 `path=`。
+9. [ ] **其他模式**：翻譯、選取文字後說話改字、Email 各一次，結果跟以前一樣。紀錄 `path=realtime`，`mode id=` 是那個模式。
+10. [ ] **換引擎的模式**：在 App 把某個模式的引擎改成 Whisper，用那個模式錄一次 → `realtime off reason=engine`，照常出字。
+11. [ ] **連續失敗**：飛航模式連續失敗 3 次 → 紀錄 `realtime failed 3× in a row → upload only for 600s`；10 分鐘內再錄是 `realtime off reason=paused(…s-left)`。
+12. [ ] **鍵盤內錄音**（實驗功能打開時）：照舊上傳，紀錄不會有 `realtime on`。
+13. [ ] **有空再測**：錄滿 15 分鐘（約 39 MB，請用 Wi-Fi），文字完整；iPhone 設定 → 行動服務 裡 Scriber 的流量；長時間使用的電量。
+
+紀錄裡會看到的幾行（只有 id、原因、毫秒數、段數和字數，沒有說的話和 key）：
+
+| 想知道 | 紀錄裡的字 |
+|---|---|
+| 這次有沒有用即時 | `[engine] id=… realtime on lang=zh setupMs=… app=background`；沒用時 `realtime off reason=disabled`（開關關了）、`engine`（不是 Scribe v3）、`missing-key`、`paused(…s-left)` |
+| 連線 | `[rt] [id] connected ms=… buffered=…s`（`buffered` 是連上前先存著的秒數） |
+| 錄音中就失敗了 | `[engine] id=… realtime failed while recording reason=… → upload at stop`，`[rt] … failed reason=…` |
+| 停止後用哪條路 | `[pipe] id=… path=realtime stopToFinalMs=… chars=… connectMs=… commitMs=… commits=… audio=…s`，或 `path=batch reason=…`（`failed-while-recording`、`commit-timeout`、`empty-realtime-transcript`、`mode-changed(engine)`…） |
+| 整次花多久 | `[pipe] done … realtime=true sttMs=… polishMs=… totalMs=…`（即時時 `sttMs` 就是停止到拿到文字的時間） |
+| 開關 | 啟動時 `process start … realtime=true stt=elevenLabsScribe`；切換時 `[app] settings realtime=false` |
+
+| 現象 | 可調的地方 |
+|---|---|
+| 常常 `connect-timeout` | `RealtimeSTTSession.Configuration.connectTimeout`（5 秒） |
+| 常常 `commit-timeout`、停止後要等很久才改上傳 | `commitTimeout`（3 秒）、`finishTimeout`（8 秒） |
+| 網路差時常 `stalled` | `maxSendDelay`（4 秒） |
+| 失敗太多次後暫停太久或太短 | `RealtimeBackoff.failureLimit`（3）、`pause`（600 秒） |

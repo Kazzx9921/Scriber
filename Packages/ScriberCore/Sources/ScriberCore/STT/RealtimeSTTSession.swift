@@ -2,7 +2,8 @@ import Foundation
 import ScriberShared
 
 // Real-time transcription session (ElevenLabs Scribe v3 Live). Foundation only, platform-neutral:
-// the Mac app uses it today; an iOS integration can use it unchanged (see docs/PRD-macOS版.md).
+// the Mac app shows its text while speaking (docs/PRD-macOS版.md); the iOS app uses it through
+// `RealtimeDictation` to have the text ready sooner, showing nothing (docs/PRD.md §11).
 //
 // Lifecycle: start() connects in the background → append() any number of 16 kHz chunks from any
 // thread (buffered until the session has started, bounded) → events stream partial / committed text

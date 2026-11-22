@@ -24,6 +24,15 @@ final class SettingsModel {
     var forceTraditional: Bool { didSet { store.forceTraditional = forceTraditional } }
     var saveHistory: Bool { didSet { store.saveHistory = saveHistory } }
     var hapticsEnabled: Bool { didSet { store.hapticsEnabled = hapticsEnabled } }
+    /// 邊講邊辨識: stream to Scribe v3 Live while recording so the text is ready sooner after
+    /// stopping. Nothing is shown while speaking. On unless turned off (`AppSettings.realtimeEnabled`).
+    var realtimeEnabled: Bool {
+        didSet {
+            guard realtimeEnabled != oldValue else { return }
+            store.realtimeEnabled = realtimeEnabled
+            DiagLog.log("app", "settings realtime=\(realtimeEnabled)")
+        }
+    }
 
     // MARK: Translation
     /// The language translate mode outputs now (the keyboard can change it too; see `reloadShared`).
@@ -95,6 +104,7 @@ final class SettingsModel {
         forceTraditional = store.forceTraditional
         saveHistory = store.saveHistory
         hapticsEnabled = store.hapticsEnabled
+        realtimeEnabled = store.realtimeEnabled
         translateLanguageID = store.translateLanguageID
         translateQuickLanguageIDs = store.translateQuickLanguageIDs
         customSTTName = store.customSTTName
@@ -187,13 +197,14 @@ final class SettingsModel {
 
     /// The global settings as the defaults every mode follows (設定 = 預設值, docs/PRD-模式.md §9.4),
     /// built from the observed copies so the mode screens update when a setting changes.
-    /// iOS has no real-time transcription, so that default stays off.
+    /// (The iOS mode editor has no 即時 row; a mode follows 邊講邊辨識 here.)
     var modeDefaults: ModeDefaults {
         var defaults = ModeDefaults(sttProvider: sttProvider, polishProvider: polishProvider,
                                     forceTraditional: forceTraditional, spaceBetweenCJKAndLatin: spaceBetweenCJKAndLatin,
                                     translateTarget: TranslateLanguage.find(translateLanguageID).promptName)
         defaults.punctuationRule = punctuationRule
         defaults.punctuationLimit = punctuationLimit
+        defaults.realtimeEnabled = realtimeEnabled
         return defaults
     }
 
