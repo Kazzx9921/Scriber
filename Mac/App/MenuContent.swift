@@ -1,13 +1,16 @@
 import AppKit
 import SwiftUI
+import ScriberCore
 import ScriberShared
 
 /// The menu bar menu, limited to what is used every day: status, start/finish (cancel and retry
-/// only when they apply), copy the last result, recent results, translate on/off and its
-/// language, open Scriber, quit. Engines and everything else live in the main window.
+/// only when they apply), copy the last result, recent results, the current mode (switchable; the
+/// old 翻譯 toggle is 翻譯 in this list) and the translate language, open Scriber, quit. Engines and
+/// everything else live in the main window.
 struct MenuContent: View {
     @Environment(DictationController.self) private var controller
     @Environment(MacSettings.self) private var settings
+    private let modes = ModeStore.shared
 
     var body: some View {
         @Bindable var settings = settings
@@ -34,9 +37,7 @@ struct MenuContent: View {
         }
 
         Divider()
-        // Needs a Groq or Anthropic key; 設定 explains why it is greyed out.
-        Toggle("翻譯", isOn: $settings.translateLocked)
-            .disabled(!settings.hasLLMKey && !settings.translateLocked)
+        modeMenu
         Menu("翻譯成：\(settings.translateLanguage.displayName)") {
             Picker("翻譯成", selection: $settings.translateLanguageID) {
                 ForEach(quickLanguages) { language in
@@ -55,6 +56,29 @@ struct MenuContent: View {
             .keyboardShortcut(",")
         Button("結束 Scriber") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+
+    /// 模式：<current> ▸ the enabled modes (a mode that needs an AI key is greyed out without one).
+    private var modeMenu: some View {
+        let all = modes.modes
+        let current = settings.currentModeID(in: all)
+        let currentName = all.first { $0.id == current }?.name ?? "聽寫"
+        let defaults = settings.modeDefaults
+        let prompts = PromptLibrary.shared.prompts
+        return Menu("模式：\(currentName)") {
+            ForEach(all.filter(\.isEnabled)) { mode in
+                let needsKey = ModeResolver.resolve(mode, prompts: prompts, defaults: defaults).llm?.required == true
+                    && !settings.hasLLMKey
+                Toggle(isOn: Binding(get: { current == mode.id }, set: { on in
+                    if on { settings.setCurrentMode(mode.id, store: modes) }
+                })) {
+                    Label(mode.name, systemImage: mode.icon)
+                }
+                .disabled(needsKey && current != mode.id)
+            }
+            Divider()
+            Button("管理模式…") { WindowManager.shared.showMain(.modes) }
+        }
     }
 
     private var primaryTitle: String {

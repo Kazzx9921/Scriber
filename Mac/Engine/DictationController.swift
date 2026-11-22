@@ -38,6 +38,8 @@ final class DictationController {
 
     private(set) var phase: Phase = .idle
     private(set) var currentMode: DictationMode = .dictate
+    /// The mode being recorded or processed (docs/PRD-模式.md): name and icon for the status line.
+    private(set) var currentStart: DictationStart?
     /// Newest first, at most `recentLimit` (memory only).
     private(set) var recent: [RecentResult] = []
     /// The last problem, for the menu's status line; cleared by the next dictation.
@@ -68,6 +70,7 @@ final class DictationController {
         var selection: Task<SelectionReader.AXResult, Never>?
         /// Real-time session riding along, if real-time applies to this dictation.
         var live: LiveRun?
+        var start: DictationStart?
     }
 
     private struct Job {
@@ -77,6 +80,7 @@ final class DictationController {
         var seconds: Double
         var task: Task<Void, Never>?
         var live: LiveRun?
+        var start: DictationStart?
     }
 
     /// One real-time session and the text it has shown.
@@ -112,6 +116,7 @@ final class DictationController {
         var url: URL
         var request: DictationRequest
         var seconds: Double
+        var start: DictationStart?
     }
 
     @ObservationIgnored private let settings = MacSettings.shared
@@ -156,7 +161,6 @@ final class DictationController {
         audio.muter.recoverAtLaunch()
         if let line = AudioPreferences.migrate(AppGroup.defaults) { DiagLog.log("app", "settings audio \(line)") }
         // Modes (docs/PRD-模式.md, M1): once, record the 說話改字 / 翻譯 modifier keys on 改寫 / 翻譯.
-        // Stored only; the hotkey settings still drive the keys.
         ModeMigration.runIfNeeded(legacy: LegacyModeSettings(macEditModifier: settings.hotkey.editModifier.rawValue,
                                                              macTranslateModifier: settings.hotkey.translateModifier.rawValue))
         SoundCues.shared.prepare()
@@ -192,6 +196,9 @@ final class DictationController {
             DiagLog.log("rec", "encoder prewarm ms=\(millis)")
         }
         refreshEnvironment()
+        // Modes (M2): from here on the modes' hotkeys (改寫 and 翻譯 included) decide what a modifier
+        // held with the trigger, or a mode's own combination, starts.
+        trackModes()
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshEnvironment() }
         }
@@ -258,6 +265,29 @@ final class DictationController {
 
     func applyHotkey(_ config: HotkeyConfig) {
         monitor.update(config: config)
+    }
+
+    // MARK: Modes
+
+    /// Hands the modes' hotkeys to the monitor now and whenever the modes or the prompt library
+    /// change (a prompt's kind decides whether a mode reads the selection).
+    private func trackModes() {
+        let (modes, prompts) = withObservationTracking {
+            (ModeStore.shared.modes, PromptLibrary.shared.prompts)
+        } onChange: { [weak self] in
+            DispatchQueue.main.async { self?.trackModes() }
+        }
+        monitor.update(modeHotkeys: ModeHotkeyCandidate.list(modes: modes, prompts: prompts))
+        // Keep the saved hotkey settings describing 改寫 / 翻譯 (an older build reads only those).
+        let legacy = HotkeyRoutes.legacyModifiers(in: modes)
+        if settings.hotkey.editModifier != legacy.edit || settings.hotkey.translateModifier != legacy.translate {
+            settings.hotkey.editModifier = legacy.edit
+            settings.hotkey.translateModifier = legacy.translate
+        }
+        // The menu's 翻譯 lock means "翻譯 is the current mode"; it cannot outlive the mode.
+        if settings.translateLocked, modes.first(where: { $0.id == BuiltInModeID.translate.rawValue })?.isEnabled == false {
+            settings.translateLocked = false
+        }
     }
 
     /// While the settings screen listens for a new trigger key.
@@ -334,12 +364,14 @@ final class DictationController {
 
     private func begin(_ variant: HotkeyVariant, via: String) {
         guard phase == .idle else { return }
-        let mode: DictationMode
-        switch variant {
-        case .dictate: mode = settings.translateLocked ? .translate : .dictate
-        case .edit: mode = .edit
-        case .translate: mode = .translate
+        let defaults = ModeDefaults(settings: AppSettings.shared)
+        guard let start = DictationStart.plan(variant, translateLocked: settings.translateLocked,
+                                              modes: ModeStore.shared.snapshot(), prompts: PromptLibrary.shared.snapshot(),
+                                              defaults: defaults) else {
+            DiagLog.log("engine", "start via=\(via) ignored: \(variant.logName) is not a mode any more")
+            return
         }
+        let mode = start.legacyMode
 
         micPermission = Permissions.microphone
         switch micPermission {
@@ -366,26 +398,31 @@ final class DictationController {
         }
 
         settings.refreshKeys()
-        guard settings.isSTTReady else {
-            DiagLog.log("engine", "start via=\(via) refused: engine \(settings.sttProvider.rawValue) not ready")
+        let engine = start.resolved.sttProvider
+        guard settings.isReady(engine) else {
+            DiagLog.log("engine", "start via=\(via) refused: engine \(engine.rawValue) not ready mode=\(start.modeID)")
             show(.needsSpeechKey())
             return
         }
-        if mode != .dictate, !settings.hasLLMKey {
-            DiagLog.log("engine", "start via=\(via) refused: \(mode.rawValue) needs an LLM key")
-            show(.needsLLMKey(for: mode == .edit ? .edit : .translate))
+        if start.requiresLLM, !settings.hasLLMKey {
+            DiagLog.log("engine", "start via=\(via) refused: \(mode.rawValue) mode=\(start.modeID) needs an LLM key")
+            switch start.requestModeID == nil ? mode : .dictate {
+            case .edit: show(.needsLLMKey(for: .edit))
+            case .translate: show(.needsLLMKey(for: .translate))
+            case .dictate: show(.needsLLMKey(modeName: start.name))
+            }
             return
         }
 
         dropKept(reason: "newDictation")
         lastProblem = nil
         MicLevelTest.running?.stop()
-        let request = DictationRequest(mode: mode)
+        let request = start.request()
         let tag = MacDiag.id(request.id)
         let front = NSWorkspace.shared.frontmostApplication
         let startedAt = Date()
         // Connect first: the socket handshake (~0.3 s) overlaps the microphone start.
-        let live = makeLiveRun(for: request)
+        let live = makeLiveRun(for: request, resolved: start.resolved)
         // Pause media, start cue, (deferred) mute — then the microphone, with no added delay.
         let audioPrefs = AudioPreferences.load(from: AppGroup.defaults)
         let plan = audio.begin(audioPrefs, tag: tag)
@@ -411,17 +448,21 @@ final class DictationController {
         }
 
         var selection: Task<SelectionReader.AXResult, Never>?
-        if mode == .edit {
+        if start.needsSelection {
             selection = Task.detached(priority: .userInitiated) { SelectionReader.readViaAccessibility() }
         }
-        capture = Capture(request: request, url: url, startedAt: startedAt, via: via, selection: selection, live: live)
+        capture = Capture(request: request, url: url, startedAt: startedAt, via: via, selection: selection, live: live,
+                          start: start)
         currentMode = mode
+        currentStart = start
         phase = .recording
         monitor.setRecording(true)
-        let badge = mode == .translate ? settings.translateLanguage.shortLabel : nil
+        let badge = start.badge
         let recorder = self.recorder
         lastEscapeAt = nil
-        hud.showRecording(mode: mode, badge: badge, live: live != nil) { recorder.level }
+        hud.showRecording(mode: mode, badge: badge, symbol: start.showsMark ? start.icon : nil, live: live != nil) {
+            recorder.level
+        }
         if micNotice.shouldNotify(pinnedUID: audioPrefs.inputDeviceUID, route: recorder.route) {
             hud.flashRecordingHint(MicFallbackNotice.hudLabel, for: 2.4)
             DiagLog.log("engine", "id=\(tag) pinned microphone not used (\(recorder.route.logDescription)) → told the user")
@@ -438,7 +479,7 @@ final class DictationController {
         maxDurationWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + ClipPolicy.maximumRecordingSeconds, execute: work)
 
-        DiagLog.log("engine", "recording id=\(MacDiag.id(request.id)) via=\(via) mode=\(mode.rawValue) "
+        DiagLog.log("engine", "recording id=\(MacDiag.id(request.id)) via=\(via) mode=\(mode.rawValue) modeID=\(start.modeID) "
                     + "front=\(MacDiag.app(front)) input=\(recorder.inputDescription) route=\(recorder.route.logDescription) "
                     + "realtime=\(live != nil) startMs=\(MacDiag.millis(since: startedAt))")
     }
@@ -447,9 +488,8 @@ final class DictationController {
 
     /// A started session if real-time applies to this dictation, else nil (logged when the
     /// setting is on but something else is missing).
-    private func makeLiveRun(for request: DictationRequest) -> LiveRun? {
-        let app = AppSettings.shared
-        guard app.realtimeEnabled else { return nil }
+    private func makeLiveRun(for request: DictationRequest, resolved: ResolvedModeConfig) -> LiveRun? {
+        guard resolved.realtimeEnabled else { return nil }
         let tag = MacDiag.id(request.id)
         if let until = realtimePausedUntil, until > Date() {
             DiagLog.log("engine", "id=\(tag) realtime paused after \(realtimeFailures) failures in a row → batch "
@@ -457,14 +497,14 @@ final class DictationController {
             return nil
         }
         let session: RealtimeSTTSession
-        switch RealtimeSTTSession.make(settings: app, logTag: tag) {
+        switch RealtimeSTTSession.make(resolved: resolved, logTag: tag) {
         case .failure(let reason):
             DiagLog.log("engine", "id=\(tag) realtime unavailable reason=\(reason.rawValue) → batch")
             return nil
         case .success(let made):
             session = made
         }
-        let run = LiveRun(session: session, forceTraditional: app.forceTraditional)
+        let run = LiveRun(session: session, forceTraditional: resolved.forceTraditional)
         // The live text converts every partial; load the dictionaries before the first one arrives.
         Task.detached(priority: .utility) { ZhTW.prewarm() }
         session.start()
@@ -585,7 +625,7 @@ final class DictationController {
             return
         }
         phase = .processing
-        hud.showProcessing(mode: request.mode)
+        hud.showProcessing(mode: request.mode, symbol: Self.processingSymbol(capture.start))
         if let live = capture.live {
             live.consumer?.cancel()
             // Commit right away; 說話改字 may still be reading the selection meanwhile.
@@ -595,7 +635,14 @@ final class DictationController {
             }
         }
         process(url: summary.url, request: request, seconds: summary.duration, selection: capture.selection,
-                selectionPending: request.mode == .edit, live: capture.live, stoppedAt: stoppedAt)
+                selectionPending: capture.start?.needsSelection ?? (request.mode == .edit), live: capture.live,
+                stoppedAt: stoppedAt, start: capture.start)
+    }
+
+    /// The HUD's processing pill shows the mode's icon (nothing for plain 聽寫).
+    private static func processingSymbol(_ start: DictationStart?) -> String? {
+        guard let start else { return nil }
+        return start.showsMark ? start.icon : nil
     }
 
     private func cancel(reason: String, silent: Bool) {
@@ -668,8 +715,8 @@ final class DictationController {
     /// the start, or the ⌘C fallback now).
     private func process(url: URL, request: DictationRequest, seconds: Double,
                          selection: Task<SelectionReader.AXResult, Never>?, selectionPending: Bool,
-                         live: LiveRun? = nil, stoppedAt: Date = Date()) {
-        var job = Job(request: request, url: url, seconds: seconds, live: live)
+                         live: LiveRun? = nil, stoppedAt: Date = Date(), start: DictationStart? = nil) {
+        var job = Job(request: request, url: url, seconds: seconds, live: live, start: start)
         let jobID = job.id
         let started = Date()
         job.task = Task { [weak self] in
@@ -688,7 +735,7 @@ final class DictationController {
             guard !Task.isCancelled, self.job?.id == jobID else { return }
             self.job?.request = request
             let settings = self.settings
-            DiagLog.log("pipe", "start id=\(MacDiag.id(request.id)) mode=\(request.mode.rawValue) "
+            DiagLog.log("pipe", "start id=\(MacDiag.id(request.id)) mode=\(request.mode.rawValue) modeID=\(request.modeID ?? "-") "
                         + "stt=\(settings.sttProvider.rawValue) polish=\(settings.polishProvider.rawValue) "
                         + "realtime=\(live != nil) selectionChars=\(request.selectedText?.count ?? 0)")
             do {
@@ -787,7 +834,7 @@ final class DictationController {
         }
         let retryable = Self.isRetryable(error)
         if retryable {
-            kept = Kept(url: job.url, request: request, seconds: job.seconds)
+            kept = Kept(url: job.url, request: request, seconds: job.seconds, start: job.start)
         } else {
             files.delete(job.url)
         }
@@ -805,9 +852,11 @@ final class DictationController {
         lastProblem = nil
         phase = .processing
         currentMode = kept.request.mode
-        hud.showProcessing(mode: kept.request.mode)
+        currentStart = kept.start
+        hud.showProcessing(mode: kept.request.mode, symbol: Self.processingSymbol(kept.start))
         DiagLog.log("engine", "retry id=\(MacDiag.id(kept.request.id))")
-        process(url: kept.url, request: kept.request, seconds: kept.seconds, selection: nil, selectionPending: false)
+        process(url: kept.url, request: kept.request, seconds: kept.seconds, selection: nil, selectionPending: false,
+                start: kept.start)
     }
 
     private func dropKept(reason: String) {
@@ -868,9 +917,18 @@ final class DictationController {
     var statusLine: String {
         switch phase {
         case .recording:
+            if let start = currentStart, start.requestModeID != nil {
+                return "聆聽中…（\(start.name)）"
+            }
             switch currentMode {
-            case .dictate: return "聆聽中…"
-            case .translate: return "聆聽中…（翻譯成\(settings.translateLanguage.displayName)）"
+            case .dictate:
+                guard let start = currentStart, start.showsMark else { return "聆聽中…" }
+                return "聆聽中…（\(start.name)）"
+            case .translate:
+                let target = currentStart.flatMap { start in
+                    TranslateLanguage.all.first { $0.promptName == start.resolved.translateTarget }
+                } ?? settings.translateLanguage
+                return "聆聽中…（翻譯成\(target.displayName)）"
             case .edit: return "聆聽中…（說話改字）"
             }
         case .processing:

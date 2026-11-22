@@ -66,6 +66,9 @@ struct HotkeyStateMachine: Sendable {
     }
 
     var config: HotkeyConfig
+    /// The modes' hotkeys (`HotkeyRoutes`): which modifiers held with the trigger start which mode.
+    /// nil: the pre-modes variants of `config` (說話改字 / 翻譯 modifiers).
+    var routes: HotkeyRoutes?
     /// Set by the owner while a dictation is recording.
     var isRecording = false
     /// Set by the owner while the settings screen captures a new trigger key.
@@ -203,7 +206,7 @@ struct HotkeyStateMachine: Sendable {
         heldKeys = heldKeys.filter { time - $0.value < Self.heldKeyExpiry }
         let dirty = !heldKeys.isEmpty
         // Ours when it means something: stopping a recording, or a dictation / variant to start.
-        let meaningful = isRecording || config.variant(for: extras) != nil
+        let meaningful = isRecording || variant(for: extras) != nil
         ownsTriggerKey = !dirty && meaningful
         press = Press(start: time, extras: extras, dirty: dirty)
         let tick = config.mode == .hold && ownsTriggerKey ? Self.holdArmDelay : nil
@@ -218,13 +221,13 @@ struct HotkeyStateMachine: Sendable {
             guard !current.dirty else { return Output(note: "trigger ignored: used in a combination") }
             if isRecording {
                 // Stopping: any clean press counts, however long, with or without other modifiers.
-                return Output(event: .tap(config.variant(for: current.extras) ?? .dictate))
+                return Output(event: .tap(variant(for: current.extras) ?? .dictate))
             }
             let held = time - current.start
             guard held <= Self.tapMaxDuration else {
                 return Output(note: "trigger ignored: held \(String(format: "%.2f", held))s (tap limit \(Self.tapMaxDuration)s)")
             }
-            guard let variant = config.variant(for: current.extras) else {
+            guard let variant = self.variant(for: current.extras) else {
                 return Output(note: "trigger ignored: with \(Self.describe(current.extras)) (no variant)")
             }
             return Output(event: .tap(variant))
@@ -243,7 +246,7 @@ struct HotkeyStateMachine: Sendable {
         guard config.mode == .hold, var current = press, !current.armed, !current.dirty else { return Output() }
         let remaining = current.start + Self.holdArmDelay - time
         if remaining > 0.001 { return Output(tickAfter: remaining) }
-        guard let variant = config.variant(for: current.extras) else {
+        guard let variant = self.variant(for: current.extras) else {
             current.dirty = true
             press = current
             return Output(note: "trigger ignored: with \(Self.describe(current.extras)) (no variant)")
@@ -259,6 +262,12 @@ struct HotkeyStateMachine: Sendable {
         current.dirty = true
         press = current
         return current.armed && config.mode == .hold ? Output(event: .holdAborted) : Output()
+    }
+
+    /// The variant for the other modifiers held with the trigger (nil: the press means nothing).
+    private func variant(for extras: Set<ModifierFamily>) -> HotkeyVariant? {
+        guard let routes else { return config.variant(for: extras) }
+        return routes.variant(for: extras)
     }
 
     static func describe(_ families: Set<ModifierFamily>) -> String {

@@ -340,11 +340,25 @@ enum TriggerMode: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-/// What a trigger press asks for, decided by the other modifiers held with it.
-enum HotkeyVariant: String, Codable, Sendable {
+/// What a trigger press asks for, decided by the other modifiers held with it (or by a mode's own
+/// key combination). `.edit` and `.translate` are the 改寫 and 翻譯 modes — the pre-modes
+/// 說話改字 and 翻譯 variants; `.mode` is any other mode, by id (docs/PRD-模式.md §7.3).
+enum HotkeyVariant: Hashable, Sendable {
+    /// The current mode (the default mode, or 翻譯 while the menu's lock is on).
     case dictate
     case edit
     case translate
+    case mode(String)
+
+    /// For the diagnostic log: mode ids only (shipped ids or UUIDs), never names.
+    var logName: String {
+        switch self {
+        case .dictate: "dictate"
+        case .edit: "edit"
+        case .translate: "translate"
+        case .mode(let id): "mode:\(id)"
+        }
+    }
 }
 
 /// A modifier that, held together with the trigger, selects a variant.

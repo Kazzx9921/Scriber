@@ -77,6 +77,8 @@ struct HotkeyRuntimeState: Equatable, Sendable {
     var combo: ComboRegistration = .off
     /// Accessibility is granted but the event tap could not be created (a relaunch usually helps).
     var tapFailed = false
+    /// Modes' own key combinations, by mode id: registered, or why not.
+    var modeCombos: [String: ComboRegistration] = [:]
 }
 
 enum HotkeySelection {

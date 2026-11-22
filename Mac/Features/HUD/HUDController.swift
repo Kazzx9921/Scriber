@@ -50,13 +50,15 @@ final class HUDController {
     private var shrinkWork: DispatchWorkItem?
 
     /// `live`: a real-time session is running; the pill grows when `updateLiveText` brings text.
-    func showRecording(mode: DictationMode, badge: String?, live: Bool = false, level: @escaping () -> Float) {
+    /// `symbol`: the mode's icon (nil: nothing, plain 聽寫); `badge` (translate language) wins over it.
+    func showRecording(mode: DictationMode, badge: String?, symbol: String? = nil, live: Bool = false,
+                       level: @escaping () -> Float) {
         model.levels.reset()
         model.levels.provider = level
         model.liveEnabled = live
         model.liveCommitted = ""
         model.livePartial = ""
-        show(.recording(mode, badge: badge), onClick: nil, reposition: true,
+        show(.recording(mode, badge: badge, symbol: symbol), onClick: nil, reposition: true,
              size: live ? Self.livePanelSize : Self.panelSize)
     }
 
@@ -87,8 +89,8 @@ final class HUDController {
         scheduleShrink()
     }
 
-    func showProcessing(mode: DictationMode) {
-        show(.processing(mode), onClick: nil, reposition: false)
+    func showProcessing(mode: DictationMode, symbol: String? = nil) {
+        show(.processing(mode, symbol: symbol), onClick: nil, reposition: false)
     }
 
     /// Auto-dismisses after `feedback.duration`.

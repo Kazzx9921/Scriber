@@ -15,6 +15,8 @@ import ScriberShared
 final class ComboHotkeys {
     enum Kind: Equatable {
         case binding(ComboBinding)
+        /// A mode's own combination (registered whatever the permission).
+        case mode(ModeComboBinding)
         case escape
     }
 
@@ -57,7 +59,7 @@ final class ComboHotkeys {
                              exclusive: true)
             guard status != noErr else { continue }
             let conflict: ComboConflict = status == OSStatus(eventHotKeyExistsErr) ? .otherApp : .failed
-            DiagLog.log("hotkey", "combo \(binding.combo.logDescription) (\(binding.variant.rawValue)) not registered "
+            DiagLog.log("hotkey", "combo \(binding.combo.logDescription) (\(binding.variant.logName)) not registered "
                         + "status=\(status) → \(conflict.rawValue)")
             if index == 0 {
                 outcome = .taken(conflict)
@@ -71,6 +73,44 @@ final class ComboHotkeys {
     func unregisterBindings() {
         for (id, registration) in registrations {
             if case .binding = registration.kind {
+                UnregisterEventHotKey(registration.ref)
+                registrations[id] = nil
+                pressed.remove(id)
+            }
+        }
+    }
+
+    // MARK: Modes' own combinations
+
+    /// Replaces the modes' combinations. Each one succeeds or fails on its own (exclusive, like
+    /// the main combination; macOS shortcuts from the system table are not registered).
+    func registerModes(_ bindings: [ModeComboBinding]) -> [String: ComboRegistration] {
+        unregisterModes()
+        guard !bindings.isEmpty else { return [:] }
+        installHandlerIfNeeded()
+        var outcome: [String: ComboRegistration] = [:]
+        for binding in bindings {
+            if Self.isSystemShortcut(binding.combo) {
+                outcome[binding.modeID] = .taken(.system)
+                continue
+            }
+            let status = add(.mode(binding), keyCode: binding.combo.keyCode, modifiers: binding.combo.carbonModifiers,
+                             exclusive: true)
+            if status == noErr {
+                outcome[binding.modeID] = .registered
+            } else {
+                let conflict: ComboConflict = status == OSStatus(eventHotKeyExistsErr) ? .otherApp : .failed
+                outcome[binding.modeID] = .taken(conflict)
+                DiagLog.log("hotkey", "mode combo \(binding.combo.logDescription) (\(binding.variant.logName)) not registered "
+                            + "status=\(status) → \(conflict.rawValue)")
+            }
+        }
+        return outcome
+    }
+
+    func unregisterModes() {
+        for (id, registration) in registrations {
+            if case .mode = registration.kind {
                 UnregisterEventHotKey(registration.ref)
                 registrations[id] = nil
                 pressed.remove(id)
@@ -103,6 +143,7 @@ final class ComboHotkeys {
 
     func unregisterAll() {
         unregisterBindings()
+        unregisterModes()
         setEscape(false)
     }
 

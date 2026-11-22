@@ -59,6 +59,14 @@ final class HotkeyMonitor: @unchecked Sendable {
     private var accessibilityTrusted = false
     private var paused = false
     private var recording = false
+    // Modes' hotkeys (docs/PRD-模式.md §7.3). Main thread only.
+    private var candidates: [ModeHotkeyCandidate] = []
+    private var routes = HotkeyRoutes()
+    /// nil until the modes are known: the event tap uses the pre-modes variants of `config` meanwhile.
+    private var routesReady = false
+    private var registeredModeBindings: [ModeComboBinding] = []
+    private var modeRegistration: [String: ComboRegistration] = [:]
+    private var lastModeAttempt: TimeInterval = -.infinity
     /// A combination that is taken is tried again this often (the other app may have quit).
     private static let comboRetryInterval: TimeInterval = 10
 
@@ -79,7 +87,27 @@ final class HotkeyMonitor: @unchecked Sendable {
         let comboChanged = config.combo != self.config.combo
         self.config = config
         DiagLog.log("hotkey", "config \(config.logDescription)")
+        rebuildRoutes()
         reconcile(force: comboChanged)
+    }
+
+    /// The modes that have a hotkey (enabled ones, in priority order). From now on the modes decide
+    /// what a modifier held with the trigger means.
+    func update(modeHotkeys: [ModeHotkeyCandidate]) {
+        guard modeHotkeys != candidates || !routesReady else { return }
+        candidates = modeHotkeys
+        routesReady = true
+        rebuildRoutes()
+        DiagLog.log("hotkey", "mode hotkeys \(Self.describe(routes))")
+        reconcile()
+    }
+
+    private func rebuildRoutes() {
+        guard routesReady else { return }
+        routes = HotkeyRoutes.build(config: config, candidates: candidates, accessibilityTrusted: accessibilityTrusted)
+        lock.lock()
+        machine.routes = routes
+        lock.unlock()
     }
 
     func setRecording(_ recording: Bool) {
@@ -110,6 +138,7 @@ final class HotkeyMonitor: @unchecked Sendable {
             accessibilityTrusted = trusted
             // 說話改字 joins (or leaves) the combinations with the permission.
             registeredBindings = []
+            rebuildRoutes()
         }
         defer { reconcile() }
         guard trusted else {
@@ -137,6 +166,8 @@ final class HotkeyMonitor: @unchecked Sendable {
         combos.unregisterAll()
         comboRegistration = .off
         registeredBindings = []
+        registeredModeBindings = []
+        modeRegistration = [:]
     }
 
     // MARK: Key combination (main thread)
@@ -147,7 +178,8 @@ final class HotkeyMonitor: @unchecked Sendable {
         let plan = HotkeySelection.plan(accessibilityTrusted: accessibilityTrusted, tapRunning: status == .running,
                                         paused: paused)
         if plan.registerCombo {
-            let bindings = HotkeySelection.comboBindings(for: config, includeEdit: accessibilityTrusted)
+            let bindings = routesReady ? routes.comboBindings(base: config.combo)
+                : HotkeySelection.comboBindings(for: config, includeEdit: accessibilityTrusted)
             let now = ProcessInfo.processInfo.systemUptime
             var retry = false
             if case .taken = comboRegistration { retry = now - lastComboAttempt >= Self.comboRetryInterval }
@@ -167,8 +199,32 @@ final class HotkeyMonitor: @unchecked Sendable {
             comboRegistration = .off
             DiagLog.log("hotkey", paused ? "combo released while choosing a key" : "combo released: single key active")
         }
-        combos.setEscape(HotkeySelection.wantsEscape(recording: recording, plan: plan, combo: comboRegistration))
+        reconcileModeCombos(force: force)
+        // Esc also when a recording started from a mode's own combination while the main one is not
+        // registered (the event tap handles Esc whenever it runs).
+        let modeEscape = recording && !paused && !(accessibilityTrusted && status == .running)
+            && modeRegistration.values.contains(.registered)
+        combos.setEscape(HotkeySelection.wantsEscape(recording: recording, plan: plan, combo: comboRegistration) || modeEscape)
         publish()
+    }
+
+    /// Modes' own combinations: registered whatever the permission, released while a key is being
+    /// chosen. A taken one is tried again every `comboRetryInterval`.
+    private func reconcileModeCombos(force: Bool) {
+        let wanted = paused ? [] : routes.combinations
+        let now = ProcessInfo.processInfo.systemUptime
+        let anyTaken = modeRegistration.values.contains { if case .taken = $0 { return true } else { return false } }
+        let retry = anyTaken && now - lastModeAttempt >= Self.comboRetryInterval
+        guard force || retry || wanted != registeredModeBindings else { return }
+        lastModeAttempt = now
+        let result = combos.registerModes(wanted)
+        if result != modeRegistration || wanted != registeredModeBindings {
+            let summary = wanted.map { "\($0.variant.logName)=\($0.combo.logDescription)→\(Self.describe(result[$0.modeID] ?? .off))" }
+            DiagLog.log("hotkey", paused && !registeredModeBindings.isEmpty ? "mode combos released while choosing a key"
+                        : "mode combos [\(summary.joined(separator: " "))]")
+        }
+        registeredModeBindings = wanted
+        modeRegistration = result
     }
 
     private func publish() {
@@ -177,7 +233,8 @@ final class HotkeyMonitor: @unchecked Sendable {
                                            tapRunning: status == .running, combo: comboRegistration, paused: paused),
             combo: comboRegistration,
             // Sticky across the retry loop (starting → failed every 2 s) until a tap runs.
-            tapFailed: accessibilityTrusted && consecutiveFailures > 0 && status != .running)
+            tapFailed: accessibilityTrusted && consecutiveFailures > 0 && status != .running,
+            modeCombos: modeRegistration)
         MainActor.assumeIsolated { HotkeyRuntime.shared.update(state) }
     }
 
@@ -187,17 +244,31 @@ final class HotkeyMonitor: @unchecked Sendable {
             emitCombo(.escape)
         case .binding(let binding):
             emitCombo(config.mode == .toggle ? .tap(binding.variant) : .holdBegan(binding.variant))
+        case .mode(let binding):
+            emitCombo(config.mode == .toggle ? .tap(binding.variant) : .holdBegan(binding.variant))
         }
     }
 
     private func comboReleased(_ kind: ComboHotkeys.Kind) {
-        guard case .binding = kind, config.mode == .hold else { return }
-        emitCombo(.holdEnded)
+        guard config.mode == .hold else { return }
+        switch kind {
+        case .binding, .mode: emitCombo(.holdEnded)
+        case .escape: break
+        }
     }
 
     private func emitCombo(_ event: HotkeyEvent) {
         DiagLog.log("hotkey", "combo event \(Self.describe(event))")
         onEvent?(event)
+    }
+
+    /// Content-free: variants and key descriptions, never mode names.
+    private static func describe(_ routes: HotkeyRoutes) -> String {
+        let tap = routes.withTrigger.map { "\(HotkeyStateMachine.describe($0.key))=\($0.value.logName)" }.sorted()
+        let combo = routes.withCombo.map { "\(HotkeyStateMachine.describe($0.families))=\($0.variant.logName)" }
+        let problems = routes.problems.map { "\($0.key)=\($0.value.logName)" }.sorted()
+        return "tap[\(tap.joined(separator: " "))] combo[\(combo.joined(separator: " "))] "
+            + "own=\(routes.combinations.count) problems[\(problems.joined(separator: " "))]"
     }
 
     private static func describe(_ registration: ComboRegistration) -> String {
@@ -375,8 +446,8 @@ final class HotkeyMonitor: @unchecked Sendable {
 
     private static func describe(_ event: HotkeyEvent) -> String {
         switch event {
-        case .tap(let variant): "tap(\(variant.rawValue))"
-        case .holdBegan(let variant): "holdBegan(\(variant.rawValue))"
+        case .tap(let variant): "tap(\(variant.logName))"
+        case .holdBegan(let variant): "holdBegan(\(variant.logName))"
         case .holdEnded: "holdEnded"
         case .holdAborted: "holdAborted"
         case .escape: "escape"

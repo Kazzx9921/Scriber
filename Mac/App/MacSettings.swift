@@ -104,17 +104,50 @@ final class MacSettings {
 
     // MARK: Hotkey
 
+    /// The main hotkey. Since M2 the modes own their hotkeys (改寫 and 翻譯 included);
+    /// `editModifier` / `translateModifier` here only mirror those two (see `HotkeyRoutes.legacyModifiers`).
     var hotkey: HotkeyConfig {
         didSet {
             guard hotkey != oldValue, !isSample else { return }
             hotkey.save(to: defaults)
             DictationController.shared.applyHotkey(hotkey)
-            if hotkey.editModifier != oldValue.editModifier || hotkey.translateModifier != oldValue.translateModifier {
-                // Modes (M1): keep the copy on 改寫 / 翻譯 current until the mode editor owns these keys.
-                ModeStore.shared.setLegacyVariantHotkeys(editModifier: hotkey.editModifier.rawValue,
-                                                         translateModifier: hotkey.translateModifier.rawValue)
-            }
         }
+    }
+
+    // MARK: Current mode
+
+    /// The mode the plain hotkey and 開始聽寫 start: 翻譯 while the 翻譯 lock (the menu's toggle
+    /// from before modes) is on, else the default mode.
+    func currentModeID(in modes: [DictationModeConfig]) -> String {
+        if translateLocked, modes.contains(where: { $0.id == BuiltInModeID.translate.rawValue && $0.isEnabled }) {
+            return BuiltInModeID.translate.rawValue
+        }
+        return ModeResolver.mode(for: DictationRequest(), in: modes).id
+    }
+
+    /// Makes `id` the current mode. 翻譯 turns the lock on (what the menu's 翻譯 did, so nothing
+    /// else changes: 改寫 without a selection still falls back to the default mode); any other mode
+    /// turns it off and becomes the default.
+    func setCurrentMode(_ id: String, store: ModeStore) {
+        if id == BuiltInModeID.translate.rawValue {
+            if store.mode(id: id)?.isEnabled == false { try? store.setEnabled(true, id: id) }
+            if !translateLocked { translateLocked = true }
+        } else {
+            if translateLocked { translateLocked = false }
+            try? store.setDefault(id: id)
+        }
+        if !isSample { DiagLog.log("app", "settings current mode=\(id)") }
+    }
+
+    /// The global settings as the defaults every mode follows (設定 = 預設值, docs/PRD-模式.md §9.4).
+    var modeDefaults: ModeDefaults {
+        var defaults = ModeDefaults(sttProvider: sttProvider, polishProvider: polishProvider, forceTraditional: forceTraditional,
+                                    spaceBetweenCJKAndLatin: spaceBetweenCJKAndLatin,
+                                    translateTarget: translateLanguage.promptName)
+        defaults.punctuationRule = punctuationRule
+        defaults.punctuationLimit = punctuationLimit
+        defaults.realtimeEnabled = realtimeEnabled
+        return defaults
     }
 
     // MARK: Keys

@@ -1,12 +1,14 @@
 import AppKit
 import SwiftUI
+import ScriberCore
 import ScriberShared
 
 /// 快捷鍵 section rows, in the order people need them:
 /// 1. 快捷鍵 — the hotkey in effect (single key with automatic paste, key combination without), as
 ///    keycaps with one 更改.
 /// 2. 操作方式 — segmented: 點一下 / 按住說話.
-/// 3. 說話改字 / 翻譯 — compact pop-ups for the modifier held with the hotkey.
+/// 3. 模式的快捷鍵 — what the modes' own hotkeys are (改寫 = the old 說話改字, 翻譯…), set in 模式
+///    (docs/PRD-模式.md, M2: the 說話改字 / 翻譯 pop-ups moved into those two modes).
 /// 4. The other kind of hotkey (備用組合鍵, or 單鍵 before automatic paste) behind a disclosure.
 /// Problems (combination taken, Fn setting, not yet active) show as a line under the row's title.
 struct HotkeySettingsView: View {
@@ -15,6 +17,9 @@ struct HotkeySettingsView: View {
 
     @Environment(MacSettings.self) private var settings
     @Environment(EngineStatus.self) private var status
+    @Environment(ModeStore.self) private var modeStore: ModeStore?
+    @Environment(PromptLibrary.self) private var promptLibrary: PromptLibrary?
+    @Environment(MainNavigation.self) private var navigation: MainNavigation?
     @State private var otherExpanded: Bool
 
     init(showsOther: Bool = false) {
@@ -41,9 +46,9 @@ struct HotkeySettingsView: View {
         }
         .pickerStyle(.segmented)
 
-        variantPicker("說話改字", caption: trusted ? "選取文字後，按住它再按快捷鍵" : "需要自動貼上",
-                      selection: $settings.hotkey.editModifier)
-        variantPicker("翻譯", caption: "按住它再按快捷鍵", selection: $settings.hotkey.translateModifier)
+        if let modeStore {
+            modeHotkeysRow(modeStore)
+        }
 
         DisclosureGroup(isExpanded: $otherExpanded) {
             if trusted {
@@ -79,17 +84,33 @@ struct HotkeySettingsView: View {
         return RowNote(text: "\(conflict.label)，請更改", isProblem: true)
     }
 
-    @ViewBuilder
-    private func variantPicker(_ title: String, caption: String, selection: Binding<VariantModifier>) -> some View {
-        let problem = settings.hotkey.problem(for: selection.wrappedValue)
-        Picker(selection: selection) {
-            ForEach(VariantModifier.allCases) { modifier in
-                Text(modifier == .none ? "不使用" : modifier.displayName).tag(modifier)
-            }
-        } label: {
-            RowTitle(title, caption: problem ?? caption, captionIsProblem: problem != nil)
+    /// "⇧ 改寫・⌃ 翻譯" and a way to the 模式 page, where they are changed.
+    private func modeHotkeysRow(_ store: ModeStore) -> some View {
+        let candidates = ModeHotkeyCandidate.list(modes: store.modes, prompts: promptLibrary?.prompts ?? PromptLibrary.builtIns)
+        let routes = HotkeyRoutes.build(config: settings.hotkey, candidates: candidates,
+                                        accessibilityTrusted: status.accessibilityTrusted)
+        let anyProblem = candidates.contains { candidate in
+            if routes.problems[candidate.modeID] != nil { return true }
+            if case .taken = status.hotkey.modeCombos[candidate.modeID] { return true }
+            return false
         }
-        .pickerStyle(.menu)
+        let summary = candidates.prefix(3).map { candidate -> String in
+            switch candidate.shortcut {
+            case .withTrigger(let families):
+                return KeyCombo.displayOrder.filter(families.contains).map(\.symbol).joined() + " " + candidate.name
+            case .combination(let combo):
+                return combo.displayName + " " + candidate.name
+            }
+        }
+        let caption = anyProblem ? "有快捷鍵不能用" : summary.isEmpty ? "沒有" : summary.joined(separator: "・") + (candidates.count > 3 ? "…" : "")
+        return LabeledContent {
+            Button("設定…") { navigation?.section = .modes }
+                .buttonStyle(.bordered)
+                .disabled(navigation == nil)
+                .help("在「模式」裡設定")
+        } label: {
+            RowTitle("模式的快捷鍵", caption: caption, captionIsProblem: anyProblem)
+        }
     }
 }
 
@@ -137,9 +158,12 @@ struct RowNote: Equatable {
 ///   F1–F20. Typing keys and Caps Lock are refused.
 /// - `.combination`: ⌘, ⌃ or ⌥ (⇧ optional) plus one key, or an F-key alone. Clashes are reported
 ///   by the hotkey monitor after saving (`HotkeyRuntime`).
+/// - `.modeCombination`: a mode's own combination (docs/PRD-模式.md §7.3), shown and saved through
+///   `ModeComboRecorder`, which also refuses combinations that clash before they are saved.
 struct HotkeyRecorderRow: View {
     enum Target {
         case single, combination
+        case modeCombination(ModeComboRecorder)
     }
 
     /// A short result under the title after a key press.
@@ -161,6 +185,8 @@ struct HotkeyRecorderRow: View {
     let title: String
     var caption: String?
     var note: RowNote?
+    /// Start listening as soon as the row appears (a mode's combination chosen for the first time).
+    var autoStart = false
 
     @Environment(MacSettings.self) private var settings
     @Environment(EngineStatus.self) private var status
@@ -172,12 +198,16 @@ struct HotkeyRecorderRow: View {
     @State private var pressedModifier: UInt16?
     @State private var dirty = false
     @State private var hovering = false
+    /// A mode's combination was saved by the current listening session.
+    @State private var saved = false
 
-    init(target: Target, title: String, caption: String? = nil, note: RowNote? = nil, initialPhase: Phase = .idle) {
+    init(target: Target, title: String, caption: String? = nil, note: RowNote? = nil, initialPhase: Phase = .idle,
+         autoStart: Bool = false) {
         self.target = target
         self.title = title
         self.caption = caption
         self.note = note
+        self.autoStart = autoStart
         switch initialPhase {
         case .idle:
             _listening = State(initialValue: false)
@@ -210,6 +240,7 @@ struct HotkeyRecorderRow: View {
                 captionLine
             }
         }
+        .onAppear { if autoStart, !listening { start() } }
         .onDisappear { stop(feedback: nil) }
     }
 
@@ -219,6 +250,7 @@ struct HotkeyRecorderRow: View {
         switch target {
         case .single: [settings.hotkey.trigger.shortName]
         case .combination: settings.hotkey.combo.keycaps
+        case .modeCombination(let recorder): recorder.keycaps
         }
     }
 
@@ -243,6 +275,12 @@ struct HotkeyRecorderRow: View {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(Theme.accent, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                     )
+                } else if currentKeycaps.isEmpty {
+                    Text("未設定")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 28)
                 } else {
                     KeycapGroup(keycaps: currentKeycaps)
                         .padding(4)
@@ -274,7 +312,7 @@ struct HotkeyRecorderRow: View {
                     .foregroundStyle(.green)
             }
         } else if listening {
-            Text(target == .single ? "修飾鍵（左右都可以）、Fn 或 F1–F20・esc 取消" : "⌘ ⌃ ⌥ 加一個鍵，或單獨的 F 鍵・esc 取消")
+            Text(listeningHint)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else if let note {
@@ -291,6 +329,14 @@ struct HotkeyRecorderRow: View {
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var listeningHint: String {
+        switch target {
+        case .single: "修飾鍵（左右都可以）、Fn 或 F1–F20・esc 取消"
+        case .combination: "⌘ ⌃ ⌥ 加一個鍵，或單獨的 F 鍵・esc 取消"
+        case .modeCombination: "例如 ⌃⌥ 加一個鍵，或 F 鍵・esc 取消"
         }
     }
 
@@ -321,6 +367,7 @@ struct HotkeyRecorderRow: View {
         switch target {
         case .single: handleSingle(event, modifiers: modifiers)
         case .combination: handleCombination(event, modifiers: modifiers)
+        case .modeCombination(let recorder): handleCombination(event, modifiers: modifiers, recorder: recorder)
         }
     }
 
@@ -364,7 +411,7 @@ struct HotkeyRecorderRow: View {
         }
     }
 
-    private func handleCombination(_ event: NSEvent, modifiers: Set<ModifierFamily>) {
+    private func handleCombination(_ event: NSEvent, modifiers: Set<ModifierFamily>, recorder: ModeComboRecorder? = nil) {
         if event.type == .flagsChanged {
             held = modifiers
             return
@@ -385,7 +432,18 @@ struct HotkeyRecorderRow: View {
             feedback = .rejected("這個鍵不能用")
             return
         }
-        settings.hotkey.combo = KeyCombo(keyCode: event.keyCode, modifiers: modifiers, keyLabel: label)
+        let combo = KeyCombo(keyCode: event.keyCode, modifiers: modifiers, keyLabel: label)
+        if let recorder {
+            if let reason = recorder.validate(combo) {
+                feedback = .rejected(reason)
+                return
+            }
+            recorder.save(combo)
+            saved = true
+            stop(feedback: .saved)
+            return
+        }
+        settings.hotkey.combo = combo
         stop(feedback: .saved)
     }
 
@@ -403,7 +461,11 @@ struct HotkeyRecorderRow: View {
         timeout = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
-        if listening { status.pauseHotkey(false) }
+        if listening {
+            status.pauseHotkey(false)
+            if case .modeCombination(let recorder) = target, !saved { recorder.onCancel() }
+        }
+        saved = false
         held = []
         pressedModifier = nil
         withAnimation(.easeOut(duration: 0.15)) {
@@ -433,6 +495,19 @@ struct HotkeyRecorderRow: View {
         if flags.contains(.shift) { families.insert(.shift) }
         return families
     }
+}
+
+/// How `HotkeyRecorderRow` shows and saves a mode's own combination.
+struct ModeComboRecorder {
+    /// The current keys ([] = none yet).
+    var keys: [String]
+    /// A few words on why the combination cannot be used, or nil to save it.
+    var validate: (KeyCombo) -> String?
+    var save: (KeyCombo) -> Void
+    /// Listening ended without saving (esc, 取消, timeout).
+    var onCancel: () -> Void = {}
+
+    var keycaps: [String] { keys }
 }
 
 /// The combination recorder in a small popover (試一次).

@@ -3,13 +3,14 @@ import ScriberCore
 import ScriberShared
 
 enum MainSection: String, CaseIterable, Identifiable {
-    case home, dictionary, transcribe, history, settings
+    case home, modes, dictionary, transcribe, history, settings
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .home: "首頁"
+        case .modes: "模式"
         case .dictionary: "字典"
         case .transcribe: "轉錄"
         case .history: "歷史"
@@ -20,6 +21,7 @@ enum MainSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .home: "house"
+        case .modes: "rectangle.stack"
         case .dictionary: "character.book.closed"
         case .transcribe: "waveform"
         case .history: "clock.arrow.circlepath"
@@ -27,14 +29,15 @@ enum MainSection: String, CaseIterable, Identifiable {
         }
     }
 
-    /// ⌘1 … ⌘5.
+    /// ⌘1 … ⌘6, in sidebar order.
     var shortcut: KeyEquivalent {
         switch self {
         case .home: "1"
-        case .dictionary: "2"
-        case .transcribe: "3"
-        case .history: "4"
-        case .settings: "5"
+        case .modes: "2"
+        case .dictionary: "3"
+        case .transcribe: "4"
+        case .history: "5"
+        case .settings: "6"
         }
     }
 }
@@ -61,13 +64,16 @@ struct MainDataSources {
     /// 轉錄: saved transcripts and the file queue (nil = the app's shared ones).
     var transcripts: TranscriptStore? = nil
     var transcriptionQueue: TranscriptionQueue? = nil
+    /// 模式: modes and the prompt library (nil = the app's shared ones).
+    var modes: ModeStore? = nil
+    var prompts: PromptLibrary? = nil
 
     @MainActor static var live: MainDataSources {
         MainDataSources(history: .shared, dictionary: .shared, loadStats: { HomeStats(UsageStats.load()) })
     }
 }
 
-/// The main window: a sidebar (首頁 / 字典 / 轉錄 / 歷史, 設定 pinned at the bottom) and the page.
+/// The main window: a sidebar (首頁 / 模式 / 字典 / 轉錄 / 歷史, 設定 pinned at the bottom) and the page.
 /// The title bar is transparent and the sidebar runs under it; there is no toolbar. Both columns
 /// start their content `MainLayout.topInset` below the title bar.
 struct MainWindowView: View {
@@ -85,6 +91,7 @@ struct MainWindowView: View {
             Group {
                 switch navigation.section {
                 case .home: HomeView(history: data.history, loadStats: data.loadStats)
+                case .modes: ModesView(store: data.modes ?? .shared, prompts: data.prompts ?? .shared)
                 case .dictionary: DictionaryView(store: data.dictionary)
                 case .transcribe: TranscribeView(store: data.transcripts ?? .shared,
                                                  queue: data.transcriptionQueue ?? .shared)
@@ -93,6 +100,9 @@ struct MainWindowView: View {
                 }
             }
             .frame(minWidth: 540, maxWidth: .infinity, maxHeight: .infinity)
+            // 設定 → 快捷鍵 lists the modes' hotkeys.
+            .environment(data.modes ?? ModeStore.shared)
+            .environment(data.prompts ?? PromptLibrary.shared)
             .ignoresSafeArea(.container, edges: .top)
             .background(Color(nsColor: .windowBackgroundColor))
         }
@@ -120,7 +130,7 @@ struct MainSidebar: View {
             BrandRow()
                 .padding(.horizontal, 8)
                 .padding(.bottom, 14)
-            ForEach([MainSection.home, .dictionary, .transcribe, .history]) { section in
+            ForEach([MainSection.home, .modes, .dictionary, .transcribe, .history]) { section in
                 row(section)
             }
             Spacer(minLength: 12)

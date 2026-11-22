@@ -143,6 +143,12 @@ struct HUDFeedback: Hashable, Sendable {
                            message: "\(what)需要 Groq 或 Anthropic 的 API key，請到設定填入。", type: "needs-llm-key")
     }
 
+    /// A mode whose AI must run (潤飾, Email, a mode of the user's…) and no LLM key at all.
+    static func needsLLMKey(modeName: String) -> HUDFeedback {
+        HUDFeedback(kind: .needsSetup, symbol: "key.fill", label: "需要 API key",
+                    message: "「\(modeName)」需要 Groq 或 Anthropic 的 API key，請到設定填入。", type: "needs-llm-key")
+    }
+
     static let micGranted = HUDFeedback(kind: .info, symbol: "mic", label: "再按一次開始",
                                         message: "已允許麥克風，再按一次快捷鍵開始說話。", type: "mic-granted")
 

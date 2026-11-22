@@ -93,7 +93,11 @@ enum Sample {
     static let noStats = HomeStats(dictations: 0, characters: 0, speakingSeconds: 0)
 
     static func sources(history: HistoryStore, dictionary: DictionaryStore? = nil, stats: HomeStats) -> MainDataSources {
-        MainDataSources(history: history, dictionary: dictionary ?? Self.dictionary([]), loadStats: { stats })
+        var data = MainDataSources(history: history, dictionary: dictionary ?? Self.dictionary([]), loadStats: { stats })
+        // The shipped modes and prompts on temporary files (never the app's own).
+        data.modes = ModeStore(fileURL: folder.appendingPathComponent("modes-\(UUID().uuidString).json"))
+        data.prompts = PromptLibrary(fileURL: folder.appendingPathComponent("prompts-\(UUID().uuidString).json"))
+        return data
     }
 }
 

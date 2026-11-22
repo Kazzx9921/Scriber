@@ -31,8 +31,7 @@ struct SettingsView: View {
                     SectionHeader("快捷鍵") {
                         InfoItem(title: "組合鍵", text: "例如 ⌥ Space。不需要任何權限，隨時可用，說完按 ⌘V 貼上。")
                         InfoItem(title: "單鍵", text: "單獨按一下某個鍵，例如右邊的 ⌥、左邊的 ⌃、Fn 或 F5。需要開啟自動貼上；開啟後會自動改用單鍵。")
-                        InfoItem(title: "說話改字", text: "先選取文字，按住設定的鍵再按快捷鍵，用說的改寫選取的文字。")
-                        InfoItem(title: "翻譯", text: "按住設定的鍵再按快捷鍵。")
+                        InfoItem(title: "模式", text: "每個模式可以有自己的快捷鍵，在「模式」裡設定。例如先選取文字，按住 ⇧ 再按快捷鍵，用說的改寫選取的文字。")
                         InfoText("錄音時按 esc 取消。")
                     }
                 }
@@ -59,7 +58,7 @@ struct SettingsView: View {
                     CustomEngineRow()
                 } header: {
                     SectionHeader("語音辨識") {
-                        InfoText("把聲音轉成文字的服務，可以隨時切換。")
+                        InfoText("把聲音轉成文字的服務，可以隨時切換。這裡是預設值，模式可以各自改。")
                         ForEach(STTProviderKind.allCases) { kind in
                             InfoItem(title: kind == .custom ? "自訂" : kind.rowTitle, text: kind.tradeoff)
                         }
@@ -78,7 +77,7 @@ struct SettingsView: View {
                 } header: {
                     SectionHeader("AI 潤飾") {
                         InfoText("去掉口誤和贅字、改口只留最後的說法、整理標點和段落，不改你的意思。")
-                        InfoText("翻譯和說話改字不用開這個：只要有 Groq 或 Anthropic 的 key 就能用。")
+                        InfoText("「聽寫」模式跟著這裡。翻譯、改寫等模式不用開這個：只要有 Groq 或 Anthropic 的 key 就能用。")
                         ForEach(PolishProviderKind.allCases) { kind in
                             InfoItem(title: kind.displayName, text: kind.detail)
                         }
@@ -100,7 +99,7 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    SectionHeader("翻譯", info: "選單列可以打開「翻譯」，並在三個常用語言之間切換；也可以按住翻譯鍵再按快捷鍵。")
+                    SectionHeader("翻譯", info: "「翻譯」模式預設翻成這個語言。選單列可以切到翻譯模式，並在三個常用語言之間切換。")
                 }
 
                 // MARK: Output
@@ -108,7 +107,7 @@ struct SettingsView: View {
                     Toggle("一律輸出繁體中文", isOn: $settings.forceTraditional)
                     Toggle("中英文之間加空格", isOn: $settings.spaceBetweenCJKAndLatin)
                 } header: {
-                    SectionHeader("輸出", info: "加空格：「我用 Mac 打字」。不加：「我用Mac打字」。")
+                    SectionHeader("輸出", info: "加空格：「我用 Mac 打字」。不加：「我用Mac打字」。這裡是預設值，模式可以各自改。")
                 }
 
                 // MARK: Punctuation

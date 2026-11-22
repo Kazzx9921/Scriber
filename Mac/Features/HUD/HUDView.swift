@@ -5,9 +5,10 @@ import ScriberShared
 /// What the floating pill shows.
 enum HUDState: Equatable {
     case hidden
-    /// `badge`: short language label in translate mode ("EN", "日").
-    case recording(DictationMode, badge: String?)
-    case processing(DictationMode)
+    /// `badge`: short language label in translate mode ("EN", "日"); `symbol`: the mode's icon
+    /// (nil for plain 聽寫).
+    case recording(DictationMode, badge: String?, symbol: String?)
+    case processing(DictationMode, symbol: String?)
     case feedback(HUDFeedback)
 }
 
@@ -69,16 +70,16 @@ struct HUDView: View {
         switch model.state {
         case .hidden:
             EmptyView()
-        case let .recording(mode, badge):
-            recording(mode, badge: badge, expanded: model.hasLiveText)
+        case let .recording(mode, badge, symbol):
+            recording(mode, badge: badge, symbol: symbol, expanded: model.hasLiveText)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(mode == .dictate ? "聆聽中" : "\(mode.displayName)聆聽中")
-        case let .processing(mode):
+        case let .processing(_, symbol):
             capsule {
                 HStack(spacing: 10) {
                     ArcSpinner(color: onPill)
-                    if mode != .dictate {
-                        Image(systemName: mode.symbol)
+                    if let symbol {
+                        Image(systemName: symbol)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(onPill.opacity(0.8))
                     }
@@ -116,32 +117,37 @@ struct HUDView: View {
         }
     }
 
+    /// The translate language, else the mode's icon; nothing for plain 聽寫.
     @ViewBuilder
-    private func modeMark(_ mode: DictationMode, badge: String?) -> some View {
-        switch mode {
-        case .dictate:
-            EmptyView()
-        case .translate:
-            Text(badge ?? "譯")
+    private func modeMark(_ mode: DictationMode, badge: String?, symbol: String?) -> some View {
+        if let badge {
+            Text(badge)
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(onPill)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
                 .overlay(Capsule().stroke(onPill.opacity(0.6), lineWidth: 1))
-        case .edit:
-            Image(systemName: mode.symbol)
+        } else if let symbol {
+            Image(systemName: symbol)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(onPill)
+        } else if mode == .translate {
+            Text("譯")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(onPill)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .overlay(Capsule().stroke(onPill.opacity(0.6), lineWidth: 1))
         }
     }
 
     /// The recording pill, or the live-text panel it grows into. One view in both cases (a rounded
     /// rectangle with the pill's corner radius is the capsule), so the change is a smooth resize.
-    private func recording(_ mode: DictationMode, badge: String?, expanded: Bool) -> some View {
+    private func recording(_ mode: DictationMode, badge: String?, symbol: String?, expanded: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Circle().fill(.red).frame(width: 9, height: 9)
-                modeMark(mode, badge: badge)
+                modeMark(mode, badge: badge, symbol: symbol)
                 if expanded { Spacer(minLength: 0) }
                 if let hint = model.recordingHint {
                     Text(hint)
