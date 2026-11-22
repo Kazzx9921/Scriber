@@ -1057,9 +1057,12 @@ final class KeyboardModel {
 
     #if DEBUG
     /// Layout review only (renders each state for screenshots); the keyboard never calls it.
+    /// `showsGlobe: false` matches Face ID iPhones, where the system draws the globe below the keyboard.
     func debugShow(availability: Availability, activity: Activity, slide: SlideIntent = .none,
                    holding: Bool = false, hasSelection: Bool = false, canUndo: Bool = false,
-                   translateLocked: Bool = false, landscape: Bool = false, warm: Bool = true) {
+                   translateLocked: Bool = false, landscape: Bool = false, warm: Bool = true,
+                   showsGlobe: Bool? = nil) {
+        if let showsGlobe { self.showsGlobe = showsGlobe }
         self.availability = availability
         self.activity = activity
         self.slide = slide

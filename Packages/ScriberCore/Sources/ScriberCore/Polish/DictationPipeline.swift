@@ -184,13 +184,9 @@ public struct DictationPipeline: Sendable {
         try Self.checkCancellation()
 
         // 3. Dictionary, 4. zh-TW
-        text = dictionary.applyReplacements(to: text)
-        if config.forceTraditional, !(mode == .translate && !Self.isChineseTarget(config.translateTarget)) {
-            text = ZhTW.toTraditionalTaiwan(text)
-            text = ZhTW.preferCommonTai(text)
-        }
-        text = ZhTW.normalize(text, spaceBetweenCJKAndLatin: config.spaceBetweenCJKAndLatin)
-        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let convert = config.forceTraditional && !(mode == .translate && !Self.isChineseTarget(config.translateTarget))
+        text = Self.outputStage(text, replacements: dictionary.applyReplacements(to:), convertToTraditional: convert,
+                                spaceBetweenCJKAndLatin: config.spaceBetweenCJKAndLatin)
         // A short message ("好", "我到了", "OK thanks") reads as curt with a full stop. 說話改字
         // rewrites existing text, whose own punctuation is left alone.
         if mode != .edit {
@@ -204,6 +200,20 @@ public struct DictationPipeline: Sendable {
     }
 
     // MARK: Helpers
+
+    /// Dictionary replacements → Simplified → Traditional (Taiwan) with 台 → punctuation and
+    /// spacing normalization → trim. Shared with file transcription (`TranscriptPostProcessor`) so
+    /// both write text the same way.
+    static func outputStage(_ text: String, replacements: (String) -> String, convertToTraditional: Bool,
+                            spaceBetweenCJKAndLatin: Bool) -> String {
+        var text = replacements(text)
+        if convertToTraditional {
+            text = ZhTW.toTraditionalTaiwan(text)
+            text = ZhTW.preferCommonTai(text)
+        }
+        text = ZhTW.normalize(text, spaceBetweenCJKAndLatin: spaceBetweenCJKAndLatin)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// Edit without a selection is plain dictation.
     static func effectiveMode(_ request: DictationRequest) -> DictationMode {

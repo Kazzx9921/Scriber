@@ -17,6 +17,10 @@ enum DebugLaunch {
     static var screen: String? { string("ScriberScreen") }
     /// Show the "已開始聆聽" screen with a fake active session.
     static var listening: Bool { flag("ScriberListening") }
+    /// Display-only "setup is finished" state for store screenshots: Home hides the setup steps
+    /// and Settings shows ElevenLabs + Groq keys as saved. Nothing is stored in the Keychain and
+    /// no permission is requested; recording still needs real permission and keys.
+    static var demoReady: Bool { flag("ScriberDemoReady") }
 
     private static func flag(_ key: String) -> Bool {
         #if DEBUG

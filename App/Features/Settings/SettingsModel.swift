@@ -122,6 +122,9 @@ final class SettingsModel {
 
     func refreshKeys() {
         storedKeys = Set(APIKeyKind.allCases.filter { keychain.hasKey(for: $0) })
+        #if DEBUG
+        if DebugLaunch.demoReady { storedKeys.formUnion([.elevenLabs, .groq]) } // display only
+        #endif
     }
 
     func saveKey(_ value: String, for kind: APIKeyKind) {

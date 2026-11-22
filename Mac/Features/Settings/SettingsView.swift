@@ -129,6 +129,9 @@ struct SettingsView: View {
                     SectionHeader("標點符號", info: PunctuationRule.explanation)
                 }
 
+                // MARK: Audio (microphone, cues, mute / pause media while recording)
+                AudioSettingsSection(model: status.isLive ? .shared : AudioSettingsModel(sample: .init()))
+
                 // MARK: General
                 Section {
                     Toggle("儲存歷史紀錄", isOn: $settings.saveHistory)

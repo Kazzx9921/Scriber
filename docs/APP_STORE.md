@@ -134,15 +134,24 @@ https://github.com/Kazzx9921/Scriber/blob/main/docs/PRIVACY.md
 | 6.9 吋（必要） | 1320 × 2868 或 1290 × 2796 | iPhone 17 Pro Max 等 |
 | 6.5 吋（選填） | 1284 × 2778 或 1242 × 2688 | 沒提供會用 6.9 吋的縮放 |
 
-最少 1 張，最多 10 張。建議 4 到 5 張：
+最少 1 張，最多 10 張。
 
-1. 在訊息 App 裡使用 Scriber 鍵盤，膠囊顯示錄音波形
-2. 辨識結果打進輸入框
-3. 長按翻譯鍵選語言
-4. 主 App 首頁「省下的時間」
-5. 設定頁（引擎和個人字典）
+**已產生（2026-11-22）**，照順序上傳：
 
-> 你的 iPhone Air 螢幕截圖是 1260 × 2736，不在上面的尺寸裡。App Store Connect 收不收這個尺寸我不確定，上傳時如果被拒，要改用模擬器（iPhone 17 Pro Max）截，或把圖放到符合尺寸的畫布上。
+| 檔案 | 標題 | 畫面 |
+|---|---|---|
+| `01-dictate.png` | 按一下說話／文字自己打好 | 聊天畫面裡的 Scriber 鍵盤，錄音中（紅點和波形） |
+| `02-clean-text.png` | 說完，就是／整理好的繁體中文 | 結果打進輸入框，上面疊一張「你說的 → 打進去的」對照 |
+| `03-translate.png` | 說中文／直接變成英文、日文、韓文 | 長按翻譯鍵，選語言 |
+| `04-time-saved.png` | 省下多少時間／一看就知道 | 首頁「省下的時間」 |
+| `05-own-api-key.png` | 用你自己的 API key／沒有月費 | 設定頁的語音辨識引擎和 key |
+
+- 6.9 吋：`docs/appstore/screenshots/zh-Hant/`（1320 × 2868）
+- 6.5 吋：`docs/appstore/screenshots/zh-Hant-6.5/`（1284 × 2778）
+- 一次看五張：`docs/appstore/screenshots/preview.jpg`
+- 原始截圖：`docs/appstore/raw/`。鍵盤三張是在測試 App 裡跑真的鍵盤程式碼截的，聊天畫面是假的；首頁和設定是真的 App（Debug 範例資料）。
+
+重新產生：改文字或版面只要跑 `python3 scripts/appstore-screenshots/compose.py`；重截 App 畫面跑 `scripts/appstore-screenshots/capture-app.sh`。細節在 `scripts/appstore-screenshots/README.md`。
 
 ---
 

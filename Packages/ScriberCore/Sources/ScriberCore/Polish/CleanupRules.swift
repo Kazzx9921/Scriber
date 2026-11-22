@@ -72,7 +72,7 @@ enum CleanupRules {
 
     /// Pronouns and demonstratives whose doubling is never legitimate written Chinese.
     /// 在、要、會、想、是、好、對… are excluded on purpose: 現在在、需要要求、開會會、想想、是是是、好好.
-    private static let stutterCharacters: Set<Character> = ["我", "你", "妳", "您", "他", "她", "它", "這", "那", "就"]
+    private static let stutterCharacters: Set<Character> = ["我", "你", "妳", "您", "他", "她", "它", "這", "这", "那", "就"]
     /// Words that end in a stutter character, so "其他他們" or "成就就是" are not stutters.
     private static let stutterBlockers: Set<String> = [
         "其他", "吉他", "其它", "迷你", "自我", "忘我", "唯我", "本我", "無我", "超我", "大我", "小我",
@@ -110,20 +110,20 @@ enum CleanupRules {
     }
 
     /// "我，我，我覺得" → "我覺得". Needs three occurrences: "是我，我來" is legitimate.
-    private static let separatedStutter = regex("([我你妳您他她它這那])(?:[，,、…\\s]+\\1){2,}")
+    private static let separatedStutter = regex("([我你妳您他她它這这那])(?:[，,、…\\s]+\\1){2,}")
 
     // MARK: Repeated words and restarted phrases
 
     /// Function words and fillers that are only ever doubled by hesitation (那個那個、然後然後、就是就是).
     /// The doubled form collapses to one; content words like 謝謝你謝謝你 are untouched.
     private static let repeatedFillerWord = regex(
-        "(那個|這個|就是|然後|所以|因為|但是|可是|不過|而且|我們|你們|他們|她們|其實|反正|如果|那麼)(?:[，,、…\\s]*\\1)+")
+        "(那[個个]|[這这][個个]|就是|然[後后]|所以|因[為为]|但是|可是|不[過过]|而且|我[們们]|你[們们]|他[們们]|她[們们]|其[實实]|反正|如果|那[麼么])(?:[，,、…\\s]*\\1)+")
 
     /// A restart: the speaker repeats the first words of a clause ("我覺得我覺得", "我們明天我們明天").
     /// Only phrases that begin with a pronoun or connective and are at least 3 characters long,
     /// so short emphatic repeats (你看你看、我來我來、你好你好) stay.
     private static let restartedPhrase = regex(
-        "((?:我們|你們|他們|她們|然後|所以|因為|但是|可是|如果|就是|那個|這個|其實)\\p{Han}{1,4}|[我你他她]\\p{Han}{2,4})(?:[，,、\\s]*\\1)+")
+        "((?:我[們们]|你[們们]|他[們们]|她[們们]|然[後后]|所以|因[為为]|但是|可是|如果|就是|那[個个]|[這这][個个]|其[實实])\\p{Han}{1,4}|[我你他她]\\p{Han}{2,4})(?:[，,、\\s]*\\1)+")
 
     /// "the the" → "the". Limited to words whose doubling is not grammatical
     /// ("that that", "had had", "is is", "log in in", "so so" are legitimate and excluded).
@@ -144,7 +144,7 @@ enum CleanupRules {
 
     /// "那個，" used as a hesitation at a clause start, followed by more content.
     private static let clauseStartNage = regex(
-        clauseBoundary + "那個[，,、…]+[ \\t]*(?=[^\\s，,、…。！？!?])")
+        clauseBoundary + "那[個个][，,、…]+[ \\t]*(?=[^\\s，,、…。！？!?])")
 
     static func removeClauseStartFillers(_ text: String) -> String {
         var s = text

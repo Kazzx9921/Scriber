@@ -15,6 +15,11 @@ import ScriberShared
 /// transcript goes through the normal post-processing (`DictationPipeline.run(transcript:…)`).
 /// If the session failed, or its final commit does not arrive in time, the recorded clip takes the
 /// batch path instead — exactly one of the two produces the inserted text.
+///
+/// 設定 → 音訊 (docs/PRD-macOS版.md): `RecordingAudioSession` wraps every recording — `begin` right
+/// before the microphone starts (pause media, start cue, mute after the cue), `end` right after it
+/// stops on every path (unmute, stop cue only for a normal stop, resume media after the delay).
+/// The microphone itself follows the pinned device (`MacRecorder` / `InputEngine`).
 @MainActor
 @Observable
 final class DictationController {
@@ -125,9 +130,20 @@ final class DictationController {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var realtimeFailures = 0
     @ObservationIgnored private var realtimePausedUntil: Date?
+    @ObservationIgnored private let audio: RecordingAudioSession
+    @ObservationIgnored private var micNotice = MicFallbackNotice()
+    @ObservationIgnored private var signalSources: [DispatchSourceSignal] = []
+    @ObservationIgnored private var didShutdown = false
 
     private init() {
         monitor = HotkeyMonitor(config: MacSettings.shared.hotkey)
+        let scheduler = MainQueueScheduler()
+        audio = RecordingAudioSession(
+            cues: SoundCues.shared,
+            muter: OutputMuter(port: CoreAudioOutputPort(), defaults: AppGroup.defaults),
+            media: MediaPauseCoordinator(port: MediaRemoteScript(), scheduler: scheduler),
+            scheduler: scheduler,
+            outputKind: { CoreAudioQuery.defaultOutputKind() })
     }
 
     // MARK: Lifecycle
@@ -136,14 +152,29 @@ final class DictationController {
     func start() {
         guard !started else { return }
         started = true
+        // First of all: a previous run that ended while the output was muted gives the sound back.
+        audio.muter.recoverAtLaunch()
+        if let line = AudioPreferences.migrate(AppGroup.defaults) { DiagLog.log("app", "settings audio \(line)") }
+        SoundCues.shared.prepare()
+        installTerminationSignals()
         FocusInfo.configureTimeout()
         let purged = files.purgeAll()
         accessibilityTrusted = Permissions.isAccessibilityTrusted
         micPermission = Permissions.microphone
+        let inputs = CoreAudioQuery.inputDevices()
+        let defaultInput = CoreAudioQuery.defaultInputDeviceID().flatMap { id in inputs.first { $0.id == id } }
         DiagLog.log("app", "launch app=\(MacDiag.appVersion) macOS=\(MacDiag.osVersion) machine=\(MacDiag.machine) "
                     + "ax=\(accessibilityTrusted) mic=\(micPermission.rawValue) hotkey[\(settings.hotkey.logDescription)] "
                     + "\(settings.logDescription) pasteboard=\(Permissions.pasteboardAccess) "
-                    + "launchAtLogin=\(LaunchAtLogin.statusDescription) purgedClips=\(purged)")
+                    + "launchAtLogin=\(LaunchAtLogin.statusDescription) purgedClips=\(purged) "
+                    + "audio[\(AudioPreferences.load(from: AppGroup.defaults).logDescription)] "
+                    + "inputs=\(inputs.count) defaultInput=\(defaultInput?.logDescription ?? "-") "
+                    + "output=\(CoreAudioQuery.defaultOutputKind().rawValue)")
+        AudioDeviceMonitor.shared.start()
+        observers.append(NotificationCenter.default.addObserver(forName: .scriberAudioDevicesChanged, object: nil,
+                                                                queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.audioDevicesChanged() }
+        })
 
         monitor.onEvent = { [weak self] event in
             MainActor.assumeIsolated { self?.handle(event) }
@@ -181,9 +212,13 @@ final class DictationController {
 
     func shutdown() {
         // A second copy quitting at launch never started; it must not touch the running one's files.
-        guard started else { return }
+        guard started, !didShutdown else { return }
+        didShutdown = true
         DiagLog.log("app", "quit phase=\(phase.rawValue)")
         if phase == .recording { recorder.discard() }
+        // Unmute and resume media (right away) on every quit, recording or not.
+        audio.shutdown()
+        MicLevelTest.running?.stop()
         capture?.live?.cancel()
         job?.live?.cancel()
         job?.task?.cancel()
@@ -340,19 +375,26 @@ final class DictationController {
 
         dropKept(reason: "newDictation")
         lastProblem = nil
+        MicLevelTest.running?.stop()
         let request = DictationRequest(mode: mode)
+        let tag = MacDiag.id(request.id)
         let front = NSWorkspace.shared.frontmostApplication
         let startedAt = Date()
         // Connect first: the socket handshake (~0.3 s) overlaps the microphone start.
         let live = makeLiveRun(for: request)
+        // Pause media, start cue, (deferred) mute — then the microphone, with no added delay.
+        let audioPrefs = AudioPreferences.load(from: AppGroup.defaults)
+        let plan = audio.begin(audioPrefs, tag: tag)
         let url: URL
         do {
             var sink: (@Sendable ([Float]) -> Void)?
             if let session = live?.session {
                 sink = { samples in session.append(samples: samples) }
             }
-            url = try recorder.start(baseURL: files.newClipBaseURL(), streamSink: sink)
+            url = try recorder.start(baseURL: files.newClipBaseURL(), pinnedUID: audioPrefs.inputDeviceUID,
+                                     silenceGate: plan.silenceGate, logTag: tag, streamSink: sink)
         } catch {
+            audio.end(.failed)
             live?.cancel()
             let message: String
             switch error as? MacRecorder.Failure {
@@ -376,6 +418,10 @@ final class DictationController {
         let recorder = self.recorder
         lastEscapeAt = nil
         hud.showRecording(mode: mode, badge: badge, live: live != nil) { recorder.level }
+        if micNotice.shouldNotify(pinnedUID: audioPrefs.inputDeviceUID, route: recorder.route) {
+            hud.flashRecordingHint(MicFallbackNotice.hudLabel, for: 2.4)
+            DiagLog.log("engine", "id=\(tag) pinned microphone not used (\(recorder.route.logDescription)) → told the user")
+        }
 
         maxDurationWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -389,8 +435,8 @@ final class DictationController {
         DispatchQueue.main.asyncAfter(deadline: .now() + ClipPolicy.maximumRecordingSeconds, execute: work)
 
         DiagLog.log("engine", "recording id=\(MacDiag.id(request.id)) via=\(via) mode=\(mode.rawValue) "
-                    + "front=\(MacDiag.app(front)) input=\(recorder.inputDescription) realtime=\(live != nil) "
-                    + "startMs=\(MacDiag.millis(since: startedAt))")
+                    + "front=\(MacDiag.app(front)) input=\(recorder.inputDescription) route=\(recorder.route.logDescription) "
+                    + "realtime=\(live != nil) startMs=\(MacDiag.millis(since: startedAt))")
     }
 
     // MARK: Real-time
@@ -497,6 +543,9 @@ final class DictationController {
         monitor.setRecording(false)
         // Stopping flushes the resampler tail into the real-time stream too.
         let summary = recorder.stop()
+        // After the microphone has stopped: unmute, then the stop cue (never part of the recording),
+        // then media resumes after its delay. Nothing below waits for any of it.
+        audio.end(.finished)
         let stoppedAt = Date()
         let request = capture.request
         guard let summary else {
@@ -507,9 +556,12 @@ final class DictationController {
             show(.forFailure(message: via == "inputLost" ? "麥克風中斷了" : "錄音失敗，請再試一次", retryable: false))
             return
         }
-        let verdict = ClipPolicy.verdict(duration: summary.duration, peakLevel: summary.peakLevel)
+        // The start cue heard through speakers does not count as speech (see `RecordingAudioSession`).
+        let peakAfterCue = recorder.peakAfterGate
+        let verdict = ClipPolicy.verdict(duration: summary.duration, peakLevel: peakAfterCue ?? summary.peakLevel)
         DiagLog.log("engine", "capture end id=\(MacDiag.id(request.id)) via=\(via) dur=\(MacDiag.seconds(summary.duration))s "
-                    + "peak=\(String(format: "%.2f", summary.peakLevel)) rateChanges=\(summary.rateChanges) "
+                    + "peak=\(String(format: "%.2f", summary.peakLevel)) "
+                    + "peakAfterCue=\(peakAfterCue.map { String(format: "%.2f", $0) } ?? "-") rateChanges=\(summary.rateChanges) "
                     + "format=\(summary.format.rawValue) kb=\(summary.fileBytes / 1024) verdict=\(verdict.rawValue)")
         switch verdict {
         case .keep:
@@ -552,6 +604,8 @@ final class DictationController {
             maxDurationWork?.cancel()
             monitor.setRecording(false)
             recorder.discard()
+            // Silent: no stop cue. Sleep: media is not resumed after waking.
+            audio.end(reason == "sleep" ? .sleep : .cancelled)
             phase = .idle
             DiagLog.log("engine", "recording cancelled id=\(MacDiag.id(id)) reason=\(reason)")
         case .processing:
@@ -576,6 +630,32 @@ final class DictationController {
         guard phase == .recording else { return }
         DiagLog.log("engine", "input lost reason=\(reason) recorded=\(MacDiag.seconds(recorder.recordedSeconds))s → finishing")
         finish(via: "inputLost")
+    }
+
+    // MARK: Audio housekeeping
+
+    /// A device came back: an unmute that could not happen earlier (device was away) gets done.
+    private func audioDevicesChanged() {
+        guard !audio.isActive, !audio.muter.pendingRecords.isEmpty else { return }
+        audio.muter.restorePending(reason: "device-change")
+    }
+
+    /// `kill`, Ctrl-C in a terminal: quit through the normal path so the output is unmuted and paused
+    /// media resumed. (A crash or `kill -9` is covered by `OutputMuter.recoverAtLaunch`.)
+    private func installTerminationSignals() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { [weak self] in
+                MainActor.assumeIsolated {
+                    DiagLog.log("app", "signal \(sig) → quitting")
+                    self?.shutdown()
+                    NSApp.terminate(nil)
+                }
+            }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     // MARK: Pipeline

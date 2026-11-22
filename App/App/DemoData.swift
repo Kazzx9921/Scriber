@@ -21,14 +21,16 @@ enum DemoData {
         #if DEBUG
         let now = Date()
         return [
+            // Both finalTexts are what the rule-based path (AI 潤飾 off, default settings) really
+            // returns for these transcripts; the first one appears in the Home store screenshot.
             Trial(date: now, outcome: .success(PipelineResult(
-                rawTranscript: "嗯那個我明天早上十點要跟 cloud code 的團隊開會 呃 不對 是十一點",
-                finalText: "我明天早上 11 點要跟 Claude Code 的團隊開會。",
-                sttMillis: 640, polishMillis: 410,
-                sttProvider: .elevenLabsScribe, polishProvider: .groq))),
+                rawTranscript: "嗯，那個，我們明天的 demo，呃，改到下午兩點，一樣在三樓會議室。",
+                finalText: "我們明天的 demo，改到下午兩點，一樣在三樓會議室",
+                sttMillis: 640, polishMillis: 0,
+                sttProvider: .elevenLabsScribe, polishProvider: .off))),
             Trial(date: now.addingTimeInterval(-90), outcome: .success(PipelineResult(
-                rawTranscript: "嗯那个我明天早上十点要跟cloud code的团队开会 呃 不对 是十一点",
-                finalText: "嗯那個我明天早上十點要跟 cloud code 的團隊開會，呃，不對，是十一點。",
+                rawTranscript: "嗯，那个，我们明天的demo，呃，改到下午两点，一样在三楼会议室。",
+                finalText: "那個，我們明天的 demo，改到下午兩點，一樣在三樓會議室。",
                 sttMillis: 310, polishMillis: 0,
                 sttProvider: .groqWhisperTurbo, polishProvider: .off))),
         ]
@@ -39,8 +41,9 @@ enum DemoData {
 
     #if DEBUG
     private static let dictionaryEntries: [DictionaryEntry] = [
-        DictionaryEntry(term: "Claude Code", soundsLike: ["cloud code", "克勞德扣"]),
-        DictionaryEntry(term: "科技宅阿高", soundsLike: ["科技摘阿高"]),
+        // Neutral sample terms only: these show up in store screenshots.
+        DictionaryEntry(term: "GitHub", soundsLike: ["get hub", "吉特哈布"]),
+        DictionaryEntry(term: "Kubernetes", soundsLike: ["酷伯內提斯"]),
         DictionaryEntry(term: "Scriber", soundsLike: ["scraper", "斯克萊伯"]),
         DictionaryEntry(term: "SwiftUI"),
         DictionaryEntry(term: "鹿野", soundsLike: ["路野"]),

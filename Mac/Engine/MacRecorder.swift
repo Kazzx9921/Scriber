@@ -5,10 +5,18 @@ import ScriberShared
 /// recording and released right after, so the microphone is never touched while idle and a new
 /// default input device is picked up automatically.
 ///
+/// 設定 → 音訊 → 麥克風: with a pinned device, every engine start (`InputEngine`) uses it when it is
+/// connected and usable, else the system default for that start; `route` says which and why.
+///
 /// If the input device changes or disappears mid-recording (AirPods connect, a USB mic is
-/// unplugged), the engine reports a configuration change; the recorder rebuilds the engine on the
-/// current default device and keeps writing to the same file (the writer handles a new sample
-/// rate). If that fails, `onInputLost` tells the owner to finish with what was recorded.
+/// unplugged), the engine reports a configuration change; the recorder rebuilds the engine — on
+/// the pinned device if it is still there, else on the current default — and keeps writing to the
+/// same file (the writer handles a new sample rate). If that fails, `onInputLost` tells the owner
+/// to finish with what was recorded.
+///
+/// `silenceGate`: when the start cue plays through speakers, the loudest level after the first
+/// `silenceGate` seconds is kept apart (`peakAfterGate`) so the silence check can ignore the cue.
+/// The audio itself is never cut.
 ///
 /// Main thread, except the tap block, which only hands samples to the thread-safe writer.
 final class MacRecorder: @unchecked Sendable {
@@ -24,6 +32,10 @@ final class MacRecorder: @unchecked Sendable {
     private(set) var isRecording = false
     /// "48000Hz/1ch", for the log.
     private(set) var inputDescription = "-"
+    /// The input the engine was started on last, and why.
+    private(set) var route: InputRoute = .systemDefault(.followSystem)
+    /// After `stop()`: the loudest level after the silence gate, nil when there was no gate.
+    private(set) var peakAfterGate: Float?
 
     private let lock = NSLock()
     private var writer: ClipWriter? // guarded by `lock`
@@ -31,6 +43,12 @@ final class MacRecorder: @unchecked Sendable {
     private var configObserver: NSObjectProtocol?
     private var restarts = 0
     private static let maxRestarts = 5
+    private var pinnedUID: String?
+    private var logTag = "-"
+    // Guarded by `lock` (tap thread + main thread).
+    private var gate: TimeInterval?
+    private var capturedSeconds: TimeInterval = 0
+    private var gatedPeak: Float = 0
 
     /// Smoothed input level 0...1 for the waveform. Any thread.
     var level: Float {
@@ -51,8 +69,10 @@ final class MacRecorder: @unchecked Sendable {
     /// Starts the microphone and a new clip next to `baseURL` (extension chosen by the writer).
     /// Returns the clip's file URL. `streamSink` (real-time transcription) receives the clip's
     /// 16 kHz mono samples as they are written, on the audio thread; it must not block.
+    /// `pinnedUID`: 設定's microphone (nil: system default). `silenceGate`: see the type comment.
     @discardableResult
-    func start(baseURL: URL, streamSink: (@Sendable ([Float]) -> Void)? = nil) throws -> URL {
+    func start(baseURL: URL, pinnedUID: String? = nil, silenceGate: TimeInterval? = nil, logTag: String = "-",
+               streamSink: (@Sendable ([Float]) -> Void)? = nil) throws -> URL {
         guard !isRecording else { throw Failure.engine(CocoaError(.featureUnsupported)) }
         let newWriter: ClipWriter
         do {
@@ -62,7 +82,13 @@ final class MacRecorder: @unchecked Sendable {
         }
         lock.lock()
         writer = newWriter
+        gate = silenceGate
+        capturedSeconds = 0
+        gatedPeak = 0
         lock.unlock()
+        self.pinnedUID = pinnedUID
+        self.logTag = logTag
+        peakAfterGate = nil
         restarts = 0
         do {
             try startEngine()
@@ -85,6 +111,8 @@ final class MacRecorder: @unchecked Sendable {
         lock.lock()
         let current = writer
         writer = nil
+        peakAfterGate = gate == nil ? nil : gatedPeak
+        gate = nil
         lock.unlock()
         return current?.finish()
     }
@@ -104,32 +132,28 @@ final class MacRecorder: @unchecked Sendable {
     // MARK: Engine
 
     private func startEngine() throws {
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        inputDescription = "\(Int(format.sampleRate))Hz/\(format.channelCount)ch"
-        // No input device (or one with no input channels): installing a tap would raise.
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            DiagLog.log("rec", "no usable input device (\(inputDescription))")
-            throw Failure.noInputDevice
-        }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.ingest(buffer)
-        }
-        engine.prepare()
+        let started: InputEngine.Started
         do {
-            try engine.start()
+            started = try InputEngine.start(pinnedUID: pinnedUID, tag: "id=\(logTag)") { [weak self] buffer in
+                self?.ingest(buffer)
+            }
+        } catch InputEngine.Failure.noInputDevice(let format) {
+            inputDescription = format
+            DiagLog.log("rec", "no usable input device (\(format))")
+            throw Failure.noInputDevice
         } catch {
-            input.removeTap(onBus: 0)
-            DiagLog.log("rec", "engine start failed \(MacDiag.error(error)) input=\(inputDescription)")
+            DiagLog.log("rec", "engine start failed \(InputEngine.describe(error))")
+            if case InputEngine.Failure.engine(let underlying) = error { throw Failure.engine(underlying) }
             throw Failure.engine(error)
         }
-        self.engine = engine
+        inputDescription = started.description
+        route = started.route
+        self.engine = started.engine
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
-                                                                object: engine, queue: .main) { [weak self] _ in
+                                                                object: started.engine, queue: .main) { [weak self] _ in
             self?.configurationChanged()
         }
-        DiagLog.log("rec", "input started \(inputDescription) restart=\(restarts)")
+        DiagLog.log("rec", "input started \(inputDescription) route=\(route.logDescription) restart=\(restarts)")
     }
 
     private func teardownEngine() {
@@ -153,7 +177,8 @@ final class MacRecorder: @unchecked Sendable {
         }
         do {
             try startEngine()
-            DiagLog.log("rec", "input device changed mid-recording \(before) → \(inputDescription), continuing")
+            DiagLog.log("rec", "input device changed mid-recording \(before) → \(inputDescription) "
+                        + "route=\(route.logDescription), continuing")
         } catch {
             DiagLog.log("rec", "input device changed mid-recording \(before) → could not restart")
             onInputLost?(error is Failure ? "no-input" : "restart-failed")
@@ -193,7 +218,14 @@ final class MacRecorder: @unchecked Sendable {
         lock.lock()
         let current = writer
         lock.unlock()
-        current?.append(samples, sampleRate: format.sampleRate)
+        let level = current?.append(samples, sampleRate: format.sampleRate) ?? 0
+        lock.lock()
+        if let gate {
+            capturedSeconds += Double(frames) / max(format.sampleRate, 1)
+            // A chunk that ends past the gate counts, even if it starts inside it: errs toward keeping the clip.
+            if capturedSeconds > gate { gatedPeak = max(gatedPeak, level) }
+        }
+        lock.unlock()
     }
 }
 

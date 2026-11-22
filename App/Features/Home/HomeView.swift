@@ -17,6 +17,8 @@ struct HomeView: View {
     @State private var keySheet: APIKeySheetItem?
     @State private var showKeyboardSetup = false
     @State private var showMicDenied = false
+    /// 轉錄 (file transcription). DEBUG `-ScriberScreen transcribe|transcript` opens it on launch.
+    @State private var showTranscribe = DebugLaunch.screen == "transcribe" || DebugLaunch.screen == "transcript"
 
     var body: some View {
         NavigationStack {
@@ -27,6 +29,14 @@ struct HomeView: View {
                     SavedTimeCard(stats: stats)
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
+                }
+
+                Section {
+                    Button {
+                        showTranscribe = true
+                    } label: {
+                        TranscribeEntryRow()
+                    }
                 }
 
                 if let trial = tryArea.trials.first {
@@ -43,6 +53,7 @@ struct HomeView: View {
             .bottomBar { micBar }
             .apiKeySheet(item: $keySheet)
             .navigationDestination(isPresented: $showKeyboardSetup) { KeyboardSetupView() }
+            .navigationDestination(isPresented: $showTranscribe) { TranscribeView() }
             .alert("麥克風權限已關閉", isPresented: $showMicDenied) {
                 Button("打開設定") { openURL(SystemSettings.appSettingsURL) }
                 Button("取消", role: .cancel) {}
@@ -94,6 +105,7 @@ struct HomeView: View {
     }
 
     private var setupItems: [SetupItem] {
+        if DebugLaunch.demoReady { return [] } // store screenshots (DEBUG only)
         var items: [SetupItem] = []
         switch engine.micPermission {
         case .denied:

@@ -250,4 +250,14 @@ final class PolishRuleBasedCleanupTests: XCTestCase {
         let long = String(repeating: "今天天氣很好，我們去公園散步。", count: 20)
         unchanged(long)
     }
+
+    // MARK: Simplified input (Whisper often answers in Simplified; conversion runs after cleanup)
+
+    func testSimplifiedFillersAreRemoved() {
+        check("那个，我想问一下", "我想问一下")
+        check("嗯，那个，我们明天开会", "我们明天开会")
+        check("然后然后我们就走了", "然后我们就走了")
+        check("这个这个方案可以", "这个方案可以")
+        check("我们我们明天见", "我们明天见")
+    }
 }

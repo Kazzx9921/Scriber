@@ -3,7 +3,7 @@ import ScriberCore
 import ScriberShared
 
 enum MainSection: String, CaseIterable, Identifiable {
-    case home, dictionary, history, settings
+    case home, dictionary, transcribe, history, settings
 
     var id: String { rawValue }
 
@@ -11,6 +11,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "首頁"
         case .dictionary: "字典"
+        case .transcribe: "轉錄"
         case .history: "歷史"
         case .settings: "設定"
         }
@@ -20,18 +21,20 @@ enum MainSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "house"
         case .dictionary: "character.book.closed"
+        case .transcribe: "waveform"
         case .history: "clock.arrow.circlepath"
         case .settings: "gearshape"
         }
     }
 
-    /// ⌘1 … ⌘4.
+    /// ⌘1 … ⌘5.
     var shortcut: KeyEquivalent {
         switch self {
         case .home: "1"
         case .dictionary: "2"
-        case .history: "3"
-        case .settings: "4"
+        case .transcribe: "3"
+        case .history: "4"
+        case .settings: "5"
         }
     }
 }
@@ -55,13 +58,16 @@ struct MainDataSources {
     var history: HistoryStore
     var dictionary: DictionaryStore
     var loadStats: @MainActor () -> HomeStats
+    /// 轉錄: saved transcripts and the file queue (nil = the app's shared ones).
+    var transcripts: TranscriptStore? = nil
+    var transcriptionQueue: TranscriptionQueue? = nil
 
     @MainActor static var live: MainDataSources {
         MainDataSources(history: .shared, dictionary: .shared, loadStats: { HomeStats(UsageStats.load()) })
     }
 }
 
-/// The main window: a sidebar (首頁 / 字典 / 歷史, 設定 pinned at the bottom) and the page.
+/// The main window: a sidebar (首頁 / 字典 / 轉錄 / 歷史, 設定 pinned at the bottom) and the page.
 /// The title bar is transparent and the sidebar runs under it; there is no toolbar. Both columns
 /// start their content `MainLayout.topInset` below the title bar.
 struct MainWindowView: View {
@@ -80,6 +86,8 @@ struct MainWindowView: View {
                 switch navigation.section {
                 case .home: HomeView(history: data.history, loadStats: data.loadStats)
                 case .dictionary: DictionaryView(store: data.dictionary)
+                case .transcribe: TranscribeView(store: data.transcripts ?? .shared,
+                                                 queue: data.transcriptionQueue ?? .shared)
                 case .history: HistoryView(store: data.history)
                 case .settings: SettingsView()
                 }
@@ -112,7 +120,7 @@ struct MainSidebar: View {
             BrandRow()
                 .padding(.horizontal, 8)
                 .padding(.bottom, 14)
-            ForEach([MainSection.home, .dictionary, .history]) { section in
+            ForEach([MainSection.home, .dictionary, .transcribe, .history]) { section in
                 row(section)
             }
             Spacer(minLength: 12)

@@ -1,7 +1,8 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// Platform-neutral on purpose (Foundation only, no AVFoundation/UIKit) so `swift test` runs on macOS.
+// Platform-neutral on purpose (Foundation only, no UIKit/AppKit) so `swift test` runs on macOS. The one
+// AVFoundation file (file transcription decoding/encoding) is guarded with `#if canImport(AVFoundation)`.
 let package = Package(
     name: "ScriberCore",
     platforms: [.iOS(.v17), .macOS(.v14)],
