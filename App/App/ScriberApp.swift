@@ -9,6 +9,9 @@ struct ScriberApp: App {
 
     init() {
         if DebugLaunch.skipOnboarding { SettingsModel.shared.hasCompletedOnboarding = true }
+        // Modes (docs/PRD-模式.md, M1): once, write the shipped modes; behaviour is unchanged
+        // because they follow the global settings. iOS has no modifier keys to record.
+        ModeMigration.runIfNeeded()
         // Load the zh-TW conversion tables off the main thread so the first dictation isn't slowed down.
         Task.detached(priority: .utility) { ZhTW.prewarm() }
     }

@@ -15,87 +15,103 @@ public struct PipelineResult: Sendable {
     /// The transcript came from a real-time session (`run(transcript:…)`), not an upload.
     /// `sttMillis` is then the wait for the final commit after the user stopped.
     public var usedRealtime: Bool
+    /// The mode that ran (`ResolvedModeConfig.modeID`).
+    public var modeID: String
+    /// What the AI did (`.dictation` for rule-based cleanup too).
+    public var task: PromptKind
+    /// What the caller should do with `finalText` (PRD §4) and which key to press after pasting.
+    public var output: ModeOutput
+    public var autoSend: ModeAutoSend
+
     public init(rawTranscript: String, finalText: String, sttMillis: Int, polishMillis: Int,
-                sttProvider: STTProviderKind, polishProvider: PolishProviderKind, usedRealtime: Bool = false) {
+                sttProvider: STTProviderKind, polishProvider: PolishProviderKind, usedRealtime: Bool = false,
+                modeID: String = BuiltInModeID.dictate.rawValue, task: PromptKind = .dictation,
+                output: ModeOutput = .paste, autoSend: ModeAutoSend = .none) {
         self.rawTranscript = rawTranscript; self.finalText = finalText
         self.sttMillis = sttMillis; self.polishMillis = polishMillis
         self.sttProvider = sttProvider; self.polishProvider = polishProvider
         self.usedRealtime = usedRealtime
+        self.modeID = modeID; self.task = task; self.output = output; self.autoSend = autoSend
     }
 }
 
-/// Settings snapshot taken once per run, so a settings change mid-run can't mix configurations.
-struct PipelineConfig: Sendable {
-    var sttProvider: STTProviderKind
-    var polishProvider: PolishProviderKind
-    var forceTraditional: Bool
-    var spaceBetweenCJKAndLatin: Bool
-    /// Punctuation preference for finished text (see `PunctuationStyler`).
-    var punctuationRule: PunctuationRule = .dropFinalPeriod
-    var punctuationLimit: Int = 20
-    var translateTarget: String
-    /// STT language hint. Mixed zh/en speech is the main use case, and Whisper needs "zh" to stay in Chinese.
-    var languageCode: String? = "zh"
-    /// Transcripts with at most this many units (CJK characters or Latin words) skip the LLM.
-    var shortTranscriptLimit: Int = 5
-    /// Hard cap on the LLM call, on top of the provider's own timeout.
-    var polishTimeout: TimeInterval = 4.5
+/// The pre-modes name of the global settings snapshot the pipeline starts from.
+typealias PipelineConfig = ModeDefaults
 
-    init(sttProvider: STTProviderKind, polishProvider: PolishProviderKind, forceTraditional: Bool,
-         spaceBetweenCJKAndLatin: Bool, translateTarget: String) {
-        self.sttProvider = sttProvider; self.polishProvider = polishProvider
-        self.forceTraditional = forceTraditional; self.spaceBetweenCJKAndLatin = spaceBetweenCJKAndLatin
-        self.translateTarget = translateTarget
-    }
-
-    init(settings: AppSettings) {
-        self.init(sttProvider: settings.sttProvider, polishProvider: settings.polishProvider,
-                  forceTraditional: settings.forceTraditional,
-                  spaceBetweenCJKAndLatin: settings.spaceBetweenCJKAndLatin,
-                  translateTarget: settings.translateTarget)
-        punctuationRule = settings.punctuationRule
-        punctuationLimit = settings.punctuationLimit
-    }
-}
-
-/// audio file → STT → (LLM polish | rule-based cleanup) → dictionary replacements → zh-TW conversion → text.
+/// audio file → STT → (LLM | rule-based cleanup) → dictionary replacements → zh-TW conversion → text.
+///
+/// Every run follows a `ResolvedModeConfig`: the request's mode (see `DictationRequest.modeID`)
+/// resolved against the global settings and the prompt library (`ModeResolver`). Callers can
+/// resolve themselves (`resolve(_:)`) and pass the result, e.g. to decide real-time transcription
+/// or the output before the run; otherwise each run resolves on its own.
 ///
 /// `run(transcript:…)` starts after STT with a transcript that is already there (real-time
 /// transcription); everything after STT is the same code for both entry points.
 public struct DictationPipeline: Sendable {
-    private let config: @Sendable () -> PipelineConfig
+    private let config: @Sendable () -> ModeDefaults
+    private let modes: @Sendable () -> [DictationModeConfig]
+    private let prompts: @Sendable () -> [PromptTemplate]
     private let dictionary: DictionaryStore
     private let makeSTT: @Sendable (STTProviderKind) throws -> any STTProvider
     private let makePolish: @Sendable (PolishProviderKind) throws -> (any PolishProvider)?
+    /// Diagnostics: mode id, task, provider kinds, context kinds and their lengths. Never content.
+    private let log: @Sendable (String) -> Void
 
-    public init(settings: AppSettings = .shared, keys: KeychainStore = .shared, dictionary: DictionaryStore = .shared) {
-        self.init(config: { PipelineConfig(settings: settings) },
+    public init(settings: AppSettings = .shared, keys: KeychainStore = .shared, dictionary: DictionaryStore = .shared,
+                modes: ModeStore = .shared, prompts: PromptLibrary = .shared) {
+        self.init(config: { ModeDefaults(settings: settings) },
+                  modes: { modes.snapshot() },
+                  prompts: { prompts.snapshot() },
                   dictionary: dictionary,
                   makeSTT: { try STTFactory.make($0, keys: keys) },
-                  makePolish: { try PolishFactory.make($0, keys: keys) })
+                  makePolish: { try PolishFactory.make($0, keys: keys) },
+                  log: { DiagLog.log("pipe", $0) })
     }
 
-    /// Dependency-injected initializer used by tests.
+    /// Dependency-injected initializer used by tests: the shipped modes and prompts, no log.
     init(config: @escaping @Sendable () -> PipelineConfig,
          dictionary: DictionaryStore,
          makeSTT: @escaping @Sendable (STTProviderKind) throws -> any STTProvider,
          makePolish: @escaping @Sendable (PolishProviderKind) throws -> (any PolishProvider)?) {
+        self.init(config: config, modes: { DictationModeConfig.builtIns }, prompts: { PromptLibrary.builtIns },
+                  dictionary: dictionary, makeSTT: makeSTT, makePolish: makePolish, log: { _ in })
+    }
+
+    init(config: @escaping @Sendable () -> ModeDefaults,
+         modes: @escaping @Sendable () -> [DictationModeConfig],
+         prompts: @escaping @Sendable () -> [PromptTemplate],
+         dictionary: DictionaryStore,
+         makeSTT: @escaping @Sendable (STTProviderKind) throws -> any STTProvider,
+         makePolish: @escaping @Sendable (PolishProviderKind) throws -> (any PolishProvider)?,
+         log: @escaping @Sendable (String) -> Void) {
         self.config = config
+        self.modes = modes
+        self.prompts = prompts
         self.dictionary = dictionary
         self.makeSTT = makeSTT
         self.makePolish = makePolish
+        self.log = log
+    }
+
+    /// The configuration `request` runs with right now (selection known).
+    public func resolve(_ request: DictationRequest) -> ResolvedModeConfig {
+        ModeResolver.resolve(request, modes: modes(), prompts: prompts(), defaults: config())
     }
 
     public func run(audioFile: URL, request: DictationRequest) async throws -> PipelineResult {
-        let config = config()
+        try await run(audioFile: audioFile, request: request, resolved: resolve(request))
+    }
+
+    /// Runs with a configuration resolved earlier (`resolve(_:)`, with the final request).
+    public func run(audioFile: URL, request: DictationRequest, resolved: ResolvedModeConfig) async throws -> PipelineResult {
         let entries = dictionary.snapshot()
-        let mode = Self.effectiveMode(request)
         // Fail before spending STT money if the mode cannot be served.
-        let (llm, llmKind) = try resolveLLM(mode: mode, config: config)
+        let (llm, llmKind) = try resolveLLM(resolved)
+        logStart(resolved, request: request, llmKind: llm == nil ? nil : llmKind)
 
         // 1. STT
-        let stt = try makeSTT(config.sttProvider)
-        let options = STTOptions(languageCode: config.languageCode, keyterms: Self.keyterms(from: entries))
+        let stt = try makeSTT(resolved.sttProvider)
+        let options = STTOptions(languageCode: resolved.languageCode, keyterms: Self.keyterms(from: entries))
         let sttStart = ContinuousClock.now
         let transcript: String
         do {
@@ -106,7 +122,7 @@ public struct DictationPipeline: Sendable {
         }
         let sttMillis = Self.millis(since: sttStart)
         return try await postProcess(transcript, sttMillis: sttMillis, usedRealtime: false, request: request,
-                                     mode: mode, llm: llm, llmKind: llmKind, config: config, entries: entries)
+                                     resolved: resolved, llm: llm, llmKind: llmKind, entries: entries)
     }
 
     /// The post-STT stages (polish or rule-based cleanup → dictionary → zh-TW → normalize) on a
@@ -114,13 +130,17 @@ public struct DictationPipeline: Sendable {
     /// errors as `run(audioFile:…)`, including `PolishError.requiresLLM` for translate / edit and
     /// `ProviderError.emptyResult`. `sttMillis` is reported as is (the caller measured it).
     public func run(transcript: String, request: DictationRequest, sttMillis: Int = 0) async throws -> PipelineResult {
-        let config = config()
+        try await run(transcript: transcript, request: request, resolved: resolve(request), sttMillis: sttMillis)
+    }
+
+    public func run(transcript: String, request: DictationRequest, resolved: ResolvedModeConfig,
+                    sttMillis: Int = 0) async throws -> PipelineResult {
         let entries = dictionary.snapshot()
-        let mode = Self.effectiveMode(request)
-        let (llm, llmKind) = try resolveLLM(mode: mode, config: config)
+        let (llm, llmKind) = try resolveLLM(resolved)
+        logStart(resolved, request: request, llmKind: llm == nil ? nil : llmKind)
         return try await postProcess(transcript.trimmingCharacters(in: .whitespacesAndNewlines),
-                                     sttMillis: sttMillis, usedRealtime: true, request: request, mode: mode,
-                                     llm: llm, llmKind: llmKind, config: config, entries: entries)
+                                     sttMillis: sttMillis, usedRealtime: true, request: request,
+                                     resolved: resolved, llm: llm, llmKind: llmKind, entries: entries)
     }
 
     /// The cheap, deterministic part of the output stage for text shown while speaking:
@@ -131,40 +151,34 @@ public struct DictationPipeline: Sendable {
         ZhTW.preferCommonTai(ZhTW.toTraditionalTaiwan(text))
     }
 
-    /// Translate and edit always need an LLM, but they do not need "AI 潤飾" to be switched on:
-    /// that setting only decides whether plain dictation is polished. With polish off they use
-    /// whichever LLM has a key.
-    private func resolveLLM(mode: DictationMode, config: PipelineConfig) throws -> ((any PolishProvider)?, PolishProviderKind) {
-        if mode == .dictate {
-            // Dictation still works without the LLM.
-            return (try? makePolish(config.polishProvider), config.polishProvider)
-        }
-        let preferred: [PolishProviderKind] = config.polishProvider == .off ? [] : [config.polishProvider]
-        let candidates = preferred + [PolishProviderKind.groq, .anthropic].filter { !preferred.contains($0) }
-        for kind in candidates {
+    /// The first candidate with a key. Translate and edit (any `required` LLM) do not need
+    /// "AI 潤飾" to be switched on: that setting only decides whether plain dictation is polished.
+    private func resolveLLM(_ resolved: ResolvedModeConfig) throws -> ((any PolishProvider)?, PolishProviderKind) {
+        guard let llm = resolved.llm else { return (nil, .off) }
+        for kind in llm.candidates {
             if let provider = try? makePolish(kind) { return (provider, kind) }
         }
-        throw PolishError.requiresLLM(mode)
+        // Plain dictation still works without the LLM.
+        guard llm.required else { return (nil, llm.candidates.first ?? .off) }
+        throw PolishError.requiresLLM(resolved.legacyMode)
     }
 
     private func postProcess(_ transcript: String, sttMillis: Int, usedRealtime: Bool, request: DictationRequest,
-                             mode: DictationMode, llm: (any PolishProvider)?, llmKind: PolishProviderKind,
-                             config: PipelineConfig, entries: [DictionaryEntry]) async throws -> PipelineResult {
+                             resolved: ResolvedModeConfig, llm: (any PolishProvider)?, llmKind: PolishProviderKind,
+                             entries: [DictionaryEntry]) async throws -> PipelineResult {
         try Self.checkCancellation()
         guard CleanupRules.hasContent(transcript) else { throw ProviderError.emptyResult }
 
         // 2. Polish
-        let context = PolishContext(mode: mode, dictionary: entries, selectedText: request.selectedText,
-                                    translateTarget: config.translateTarget, fieldHint: request.fieldHint,
-                                    spaceBetweenCJKAndLatin: config.spaceBetweenCJKAndLatin)
+        let context = polishContext(resolved, request: request, entries: entries)
         let polishStart = ContinuousClock.now
         var text: String
         var usedPolish = PolishProviderKind.off
-        if let llm, mode != .dictate || Self.unitCount(transcript) > config.shortTranscriptLimit {
+        if let llm, !resolved.skipsLLMForShortTranscripts || Self.unitCount(transcript) > resolved.shortTranscriptLimit {
             do {
                 // Short dictations must stay snappy (4.5 s), but a 15-minute recording is several
                 // thousand characters and the LLM needs proportionally longer to write it out.
-                let deadline = min(150, config.polishTimeout + Double(Self.unitCount(transcript)) / 40)
+                let deadline = min(150, resolved.polishTimeout + Double(Self.unitCount(transcript)) / 40)
                 text = try await ProviderHTTP.withDeadline(seconds: deadline) {
                     try await llm.polish(transcript, context: context)
                 }
@@ -172,9 +186,9 @@ public struct DictationPipeline: Sendable {
             } catch {
                 let error = Self.normalizeCancellation(error)
                 if case ProviderError.cancelled = error { throw error }
-                // Dictation falls back to rule-based cleanup. Edit / translate must not: the fallback
-                // would replace the user's selection with the spoken instruction, or insert untranslated text.
-                guard mode == .dictate else { throw error }
+                // Dictation falls back to rule-based cleanup. The others must not: the fallback would
+                // replace the user's selection with the spoken instruction, or insert untranslated text.
+                guard resolved.fallsBackToRuleBasedCleanup else { throw error }
                 text = RuleBasedCleanup.clean(transcript)
             }
         } else {
@@ -184,19 +198,57 @@ public struct DictationPipeline: Sendable {
         try Self.checkCancellation()
 
         // 3. Dictionary, 4. zh-TW
-        let convert = config.forceTraditional && !(mode == .translate && !Self.isChineseTarget(config.translateTarget))
-        text = Self.outputStage(text, replacements: dictionary.applyReplacements(to:), convertToTraditional: convert,
-                                spaceBetweenCJKAndLatin: config.spaceBetweenCJKAndLatin)
+        text = Self.outputStage(text, replacements: dictionary.applyReplacements(to:),
+                                convertToTraditional: resolved.convertsToTraditional,
+                                spaceBetweenCJKAndLatin: resolved.spaceBetweenCJKAndLatin)
         // A short message ("好", "我到了", "OK thanks") reads as curt with a full stop. 說話改字
         // rewrites existing text, whose own punctuation is left alone.
-        if mode != .edit {
-            text = PunctuationStyler.apply(text, rule: config.punctuationRule, limit: config.punctuationLimit)
+        if resolved.appliesPunctuationRule {
+            text = PunctuationStyler.apply(text, rule: resolved.punctuationRule, limit: resolved.punctuationLimit)
         }
         guard !text.isEmpty else { throw ProviderError.emptyResult }
 
         return PipelineResult(rawTranscript: transcript, finalText: text, sttMillis: sttMillis,
-                              polishMillis: polishMillis, sttProvider: config.sttProvider,
-                              polishProvider: usedPolish, usedRealtime: usedRealtime)
+                              polishMillis: polishMillis, sttProvider: resolved.sttProvider,
+                              polishProvider: usedPolish, usedRealtime: usedRealtime,
+                              modeID: resolved.modeID, task: resolved.task, output: resolved.output,
+                              autoSend: resolved.autoSend)
+    }
+
+    /// What the LLM gets. Context the mode does not allow is left out here already, not only in the prompt.
+    func polishContext(_ resolved: ResolvedModeConfig, request: DictationRequest, entries: [DictionaryEntry]) -> PolishContext {
+        let flags = resolved.context
+        return PolishContext(mode: resolved.legacyMode, dictionary: entries,
+                             selectedText: flags.selectedText ? request.selectedText : nil,
+                             translateTarget: resolved.translateTarget, fieldHint: request.fieldHint,
+                             spaceBetweenCJKAndLatin: resolved.spaceBetweenCJKAndLatin,
+                             prompt: resolved.llm?.prompt, contextFlags: flags,
+                             clipboardText: flags.clipboard ? request.clipboardText : nil,
+                             appName: flags.appName ? request.appName : nil)
+    }
+
+    /// One content-free line per run: which mode, what it does, which context kinds go along and
+    /// how long they are. Never the transcript, selection, clipboard, prompt text or mode name.
+    private func logStart(_ resolved: ResolvedModeConfig, request: DictationRequest, llmKind: PolishProviderKind?) {
+        var line = "mode id=\(resolved.modeID)"
+        if resolved.requestedModeID != resolved.modeID { line += " requested=\(resolved.requestedModeID)" }
+        line += " task=\(resolved.task.rawValue) llm=\(llmKind?.rawValue ?? "off")"
+        if let prompt = resolved.llm?.prompt {
+            line += " prompt=\(prompt.builtInID?.rawValue ?? "custom")\(prompt.isPristineBuiltIn ? "" : "*")"
+        }
+        line += " output=\(resolved.output.rawValue)"
+        let context = polishContext(resolved, request: request, entries: [])
+        var kinds: [String] = []
+        let selected = (context.selectedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if resolved.llm != nil, !selected.isEmpty { kinds.append("selected:\(selected.count)") }
+        if let clip = context.clipboardText?.trimmingCharacters(in: .whitespacesAndNewlines), !clip.isEmpty {
+            kinds.append("clipboard:\(min(clip.count, PolishPrompt.contextCharacterLimit))")
+        }
+        if let app = context.appName?.trimmingCharacters(in: .whitespacesAndNewlines), !app.isEmpty {
+            kinds.append("app:\(min(app.count, PolishPrompt.appNameLimit))")
+        }
+        line += " context=\(kinds.isEmpty ? "-" : kinds.joined(separator: ","))"
+        log(line)
     }
 
     // MARK: Helpers
@@ -213,15 +265,6 @@ public struct DictationPipeline: Sendable {
         }
         text = ZhTW.normalize(text, spaceBetweenCJKAndLatin: spaceBetweenCJKAndLatin)
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Edit without a selection is plain dictation.
-    static func effectiveMode(_ request: DictationRequest) -> DictationMode {
-        if request.mode == .edit,
-           (request.selectedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .dictate
-        }
-        return request.mode
     }
 
     /// Correct spellings only; `soundsLike` variants are what we *don't* want STT to produce.

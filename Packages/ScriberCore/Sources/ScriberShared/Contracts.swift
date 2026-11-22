@@ -64,15 +64,34 @@ public enum FieldHint: String, Codable, Sendable {
 }
 
 /// Sent keyboard → app with a `start` command.
+///
+/// Modes (docs/PRD-模式.md): `modeID` names the mode to run. When it is nil (or names a mode that
+/// no longer exists) the pre-modes `mode` decides, as a compatibility layer: `.translate` → 翻譯,
+/// `.edit` → 改寫, `.dictate` → the default mode (聽寫 unless the user picked another one).
+/// All fields added for modes are optional, so requests written by older builds still decode.
 public struct DictationRequest: Codable, Equatable, Sendable {
     public var id: String
     public var mode: DictationMode
     public var selectedText: String?
     public var fieldHint: FieldHint
+    /// `DictationModeConfig.id` of the mode to run; nil = decided by `mode` (see above).
+    public var modeID: String?
+    /// Clipboard text, only when the mode's 情境感知 includes the clipboard. Never set it otherwise:
+    /// requests are persisted briefly for the keyboard ↔ app handoff.
+    public var clipboardText: String?
+    /// Name of the app in front (macOS), only when the mode's 情境感知 includes it.
+    public var appName: String?
 
     public init(id: String = UUID().uuidString, mode: DictationMode = .dictate,
-                selectedText: String? = nil, fieldHint: FieldHint = .general) {
+                selectedText: String? = nil, fieldHint: FieldHint = .general,
+                modeID: String? = nil, clipboardText: String? = nil, appName: String? = nil) {
         self.id = id; self.mode = mode; self.selectedText = selectedText; self.fieldHint = fieldHint
+        self.modeID = modeID; self.clipboardText = clipboardText; self.appName = appName
+    }
+
+    /// Selected text with something other than whitespace in it.
+    public var hasSelection: Bool {
+        !(selectedText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

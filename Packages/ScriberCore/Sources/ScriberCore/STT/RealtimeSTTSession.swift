@@ -570,6 +570,20 @@ extension RealtimeSTTSession {
         return .success(RealtimeSTTSession(apiKey: key, parameters: parameters, configuration: configuration,
                                            logTag: logTag))
     }
+
+    /// Same, for a mode resolved by `ModeResolver` (the mode's engine, language and 即時顯示 setting).
+    public static func make(resolved: ResolvedModeConfig, keys: KeychainStore = .shared,
+                            dictionary: DictionaryStore = .shared, logTag: String = "-",
+                            configuration: Configuration = .default) -> Result<RealtimeSTTSession, RealtimeSTTUnavailable> {
+        guard resolved.realtimeEnabled else { return .failure(.disabled) }
+        guard resolved.sttProvider == .elevenLabsScribe else { return .failure(.engine) }
+        guard let key = try? STTFactory.requireKey(.elevenLabs, keys: keys) else { return .failure(.missingKey) }
+        let parameters = RealtimeSTTWire.Parameters(
+            languageCode: resolved.languageCode,
+            keyterms: DictationPipeline.keyterms(from: dictionary.snapshot()))
+        return .success(RealtimeSTTSession(apiKey: key, parameters: parameters, configuration: configuration,
+                                           logTag: logTag))
+    }
 }
 
 // MARK: - Transport

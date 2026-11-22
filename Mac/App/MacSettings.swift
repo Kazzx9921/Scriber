@@ -109,6 +109,11 @@ final class MacSettings {
             guard hotkey != oldValue, !isSample else { return }
             hotkey.save(to: defaults)
             DictationController.shared.applyHotkey(hotkey)
+            if hotkey.editModifier != oldValue.editModifier || hotkey.translateModifier != oldValue.translateModifier {
+                // Modes (M1): keep the copy on 改寫 / 翻譯 current until the mode editor owns these keys.
+                ModeStore.shared.setLegacyVariantHotkeys(editModifier: hotkey.editModifier.rawValue,
+                                                         translateModifier: hotkey.translateModifier.rawValue)
+            }
         }
     }
 

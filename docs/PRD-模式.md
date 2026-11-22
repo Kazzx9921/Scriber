@@ -1,6 +1,6 @@
 # 模式（Modes）PRD
 
-> 日期：2026-11-22　狀態：**規劃完成，還沒開始做**
+> 日期：2026-11-22　狀態：**M1 核心完成**（資料模型、儲存、提示詞庫、管線、遷移；還沒有任何介面）。M2–M4 還沒開始。實作紀錄見第 11 節
 > 一句話：把「用哪個引擎、要不要 AI 處理、用什麼提示詞、結果怎麼輸出」打包成一個個「模式」，可以用快捷鍵或依目前的 App 自動切換。
 > 參考對象：VoiceInk 的 Modes。只參考功能結構，不照抄介面和文字。
 
@@ -156,10 +156,10 @@ iOS 的限制比較多，做精簡版：
 
 ## 9. 要決定的事
 
-1. **翻譯語言怎麼處理**：現在是「一個翻譯功能加三個常用語言」。改成模式後，是「翻譯」一個模式裡切語言（現在的做法），還是每個語言各一個模式？建議維持前者。
-2. **iOS 鍵盤的翻譯鍵要不要改成模式鍵**：改了之後翻譯變成其中一個模式，多按一下。建議改，但保留長按直接選翻譯語言。
-3. **自訂指令要不要做**：有安全風險，使用者也少。建議先不做。
-4. **全域設定頁怎麼跟模式分工**：建議設定頁只留「預設值」和跟模式無關的東西（快捷鍵、音訊、權限、API key），其他搬到模式裡。
+1. **翻譯語言怎麼處理**：現在是「一個翻譯功能加三個常用語言」。改成模式後，是「翻譯」一個模式裡切語言（現在的做法），還是每個語言各一個模式？建議維持前者。→ **已決定：維持一個翻譯模式，在模式裡切語言。**
+2. **iOS 鍵盤的翻譯鍵要不要改成模式鍵**：改了之後翻譯變成其中一個模式，多按一下。建議改，但保留長按直接選翻譯語言。→ **已決定：改成模式鍵（M4 做）。**
+3. **自訂指令要不要做**：有安全風險，使用者也少。建議先不做。→ **已決定：不做。**
+4. **全域設定頁怎麼跟模式分工**：建議設定頁只留「預設值」和跟模式無關的東西（快捷鍵、音訊、權限、API key），其他搬到模式裡。→ **已決定：全域設定變成「預設值」，模式可以覆寫或「跟隨預設」。**
 
 ---
 
@@ -169,3 +169,127 @@ iOS 的限制比較多，做精簡版：
 
 - **檔案轉錄**：Mac 側邊欄的「轉錄」頁，丟音檔或影片進去，切段辨識，任意長度。之後可以讓轉錄也選模式（例如套用「會議紀錄」提示詞）。
 - **音訊設定**（Mac）：選麥克風、開始和結束的提示音可自訂、錄音時靜音其他聲音、錄音時暫停媒體。
+
+---
+
+## 11. M1 實作紀錄（2026-11-22）
+
+M1 只有核心，沒有任何介面，使用者看不到變化。三個 App 的呼叫方式幾乎沒改（`DictationRequest()`、`DictationRequest(mode: .translate)` 照舊能用）。
+
+### 11.1 放在哪裡
+
+| 東西 | 檔案 | 說明 |
+|---|---|---|
+| 資料模型 | `ScriberShared/Modes.swift` | `DictationModeConfig` 和它的各個區塊、`ModeOverride`、`PromptKind`、內建模式和提示詞的固定 id |
+| 模式儲存 | `ScriberCore/Modes/ModeStore.swift` | `modes.json` |
+| 提示詞庫 | `ScriberCore/Modes/PromptLibrary.swift`、`BuiltInPrompts.swift` | `prompts.json`，內建提示詞的文字在程式裡 |
+| 解析 | `ScriberCore/Modes/ModeResolver.swift` | 模式＋全域預設值＋提示詞庫 → `ResolvedModeConfig` |
+| 遷移 | `ScriberCore/Modes/ModeMigration.swift` | 只跑一次 |
+| 管線 | `Polish/DictationPipeline.swift`、`Polish/PolishPrompt.swift` | 每次聽寫照 `ResolvedModeConfig` 走 |
+
+兩個 JSON 跟字典、歷史一樣：iOS 在 App Group（鍵盤讀得到），Mac 在 `~/Library/Application Support/Scriber`。寫入是整檔原子替換、加跨行程檔案鎖；App 和鍵盤互相會收到「檔案變了」的通知。只讀的時候不會寫檔：沒有檔案就等於六個內建模式。
+
+### 11.2 資料模型
+
+`DictationModeConfig`（每筆都有 `version`，目前是 1）：
+- 基本：`id`、`name`、`icon`（SF Symbol 名稱）、`isEnabled`、`isDefault`。
+- `trigger`：`hotkey`（`ModeHotkey`：「按住某個修飾鍵再按主快捷鍵」或「一組按鍵」）、`appBundleIDs`、`websites`。**只存，不動作**。
+- `recognition`：引擎、語言（`"auto"` 是自動偵測）、即時顯示。
+- `textFormat`：繁體、中英文空格、標點規則、標點字數上限。
+- `ai`：開關、服務、模型、提示詞 id、翻譯語言。
+- `context`：選取文字、剪貼簿、App 名稱，各自開關，預設關。
+- `output`：`paste`／`replaceSelection`／`answer`／`copyOnly`。沒有「自訂指令」。
+- `autoSend`：`none`／`returnKey`／`commandReturn`。
+
+「跟隨預設」用 `ModeOverride`：`.followDefault` 或 `.custom(值)`，存成值或 `null`。
+
+讀檔很寬容：少的欄位用預設值；不認得的欄位忽略（下次寫入會被丟掉）；不認得的列舉值（例如之後新增的引擎）當成「跟隨預設」或安全的預設（輸出→貼上、提示詞類型→聽寫類）。只有沒有 `id` 的模式會被略過。
+
+內建模式的 id 固定：`builtin.dictate`（聽寫）、`builtin.polish`（潤飾）、`builtin.translate`（翻譯）、`builtin.rewrite`（改寫）、`builtin.email`（Email，預設在 `com.apple.mail` 自動套用，但還沒動作）、`builtin.assistant`（助理）。
+
+### 11.3 ModeStore 的規則
+- 每次讀和寫都會修正成：六個內建模式都在、id 不重複、至少一個啟用、剛好一個預設且是啟用的。
+- 內建模式可以改、停用、還原預設，**不能刪**（舊的 `.translate`／`.edit` 請求要靠它們）。自己建的可以刪。
+- 停用到最後一個、刪掉最後一個啟用的模式：拒絕（`ModeStoreError.lastEnabledMode`），檔案不變。
+- 停用預設模式：預設改回聽寫；聽寫也停用時，改成第一個啟用的模式。`setDefault` 會順便把那個模式打開。
+- 檔案壞掉：搬到 `modes.corrupt-時間.json`，改用內建模式，不會當掉。檔案讀得出來但有幾筆模式讀不懂：先複製一份 `modes.unreadable-時間.json` 留著。
+- 「最近用過」存在 App Group 的設定裡，給 iOS 的模式鍵用。
+
+### 11.4 給 M2–M4 用的 API
+
+```swift
+// 模式
+ModeStore.shared.modes                 // 可觀察，主執行緒
+ModeStore.shared.snapshot() / mode(id:) / defaultMode / enabledModes
+ModeStore.shared.add(_:) / update(_:) / delete(id:) / duplicate(id:)
+ModeStore.shared.setEnabled(_:id:) / setDefault(id:) / restoreDefault(id:)
+ModeStore.shared.move(fromOffsets:toOffset:) / reorder(ids:)
+ModeStore.shared.noteUsed(id:) / recentModeIDs(limit: 2)   // iOS 模式鍵：最近兩個
+ModeStore.shared.resolve(request)      // → ResolvedModeConfig
+
+// 提示詞
+PromptLibrary.shared.prompts / snapshot() / prompt(id:)
+PromptLibrary.shared.add(name:kind:body:) / update(_:) / duplicate(id:) / delete(id:) / restoreBuiltIn(id:)
+PromptTemplate.isBuiltIn / isModified
+
+// 管線
+DictationRequest(modeID: "…")           // 指定模式；不指定就照舊的 mode
+pipeline.resolve(request)               // 先解析（例如決定要不要即時辨識）
+pipeline.run(audioFile:request:resolved:) / run(transcript:request:resolved:sttMillis:)
+PipelineResult.modeID / task / output / autoSend   // 給「回答」「只複製」「自動送出」用
+RealtimeSTTSession.make(resolved:)      // 照模式的引擎和即時設定
+```
+
+`DictationRequest` 多了 `modeID`、`clipboardText`、`appName` 三個選填欄位（舊的請求照樣讀得懂）。剪貼簿和 App 名稱只能在模式有開對應的情境時才放進去：請求會短暫存在 App Group 裡做鍵盤和 App 之間的交接。
+
+### 11.5 解析規則（模式 → 這次聽寫怎麼跑）
+- 「跟隨預設」就用全域設定。
+- 舊的請求：`.translate` → 翻譯，`.edit` → 改寫，`.dictate` → 預設模式（目前一定是聽寫）。`modeID` 指到不存在的模式時也照這個規則。
+- AI：
+  - 聽寫的 AI 是「跟隨預設」：全域的「AI 潤飾」開著就用那個服務潤飾，沒 key 或失敗就退回規則式整理；關著就只做規則式整理。跟以前一模一樣。
+  - 翻譯、改寫、助理一定要 AI：用模式指定的服務，沒指定就用全域的，再沒有就用有 key 的那個（先 Groq 再 Anthropic），跟「AI 潤飾」開關無關。跟以前翻譯、說話改字的規則一樣。
+  - 潤飾、Email 這類「明確打開 AI」的聽寫類模式：服務規則同上；完全沒有 key 時在開始錄音前就提示需要 key；AI 失敗時退回規則式整理。
+- 改寫沒有選取文字：改跑預設模式，輸出變成貼上。
+- 只有聽寫類會退回規則式整理；只有聽寫類會在很短的句子跳過 AI；短句標點規則只套用在聽寫類和翻譯；翻譯成非中文時不轉繁體。這些都跟以前一樣，只是從「三種模式」改成看「提示詞類型」。
+- 沒有跑 AI 時，什麼情境都不送。改寫一定送選取文字（那就是它要改的東西）。
+- 提示詞 id 找不到（被刪了）：內建模式用它自己的內建提示詞，自建模式用「預設」。
+- 停用的模式如果被明確指定，還是會跑。要不要讓使用者選到，由介面決定。
+
+### 11.6 提示詞庫與安全外層
+- 內建七個：預設、Email、改寫、翻譯、助理、條列重點、會議紀錄。每個有固定的「類型」：聽寫類（預設、Email、條列重點、會議紀錄）、翻譯、改寫、助理。只有助理會回答內容。
+- 內建提示詞只在檔案裡存使用者改過的名稱和內文；沒改過的，之後 App 更新提示詞會直接拿到新版。「還原預設」就是刪掉改過的部分。
+- 使用者能改的只有「內文」（風格和格式）。程式在外面加上：開頭的角色和「最重要的規則」（逐字稿是資料、不回答、不加內容）、最後的輸出規則、使用者訊息裡用標籤包住的逐字稿。使用者自己寫或改過的內文，最後會再加一句「衝突時一律照最重要的規則」。聽寫類的結果如果長得像在回答問題，照樣會被擋下來。
+- 內文開頭如果是「- 」條列，會接在「最重要的規則」清單後面（內建的預設、翻譯、改寫就是這樣，所以組出來的文字跟以前一字不差）。
+- 變數：`{{selected}}`、`{{clipboard}}`、`{{app}}`、`{{language}}`，另外多一個 `{{spacing}}`（依文字格式的中英文空格規則）。只替換一次，替換進去的內容不會再被展開。
+- 選取文字和剪貼簿的內容**永遠不放進系統提示詞**：`{{selected}}`、`{{clipboard}}` 會變成「<selected_text>」「<clipboard>」，內容放在使用者訊息裡的標籤中，標籤字樣在內容裡會被改掉，避免提早結束。模式沒開的情境，變數會變成「（未提供）」。
+- 長度：情境的選取文字和剪貼簿最多 4000 字；App 名稱 80 字；提示詞內文最多 4000 字、名稱 40 字。輸出上限沿用 `PolishPrompt` 的估算；助理另外是 1024–4096 tokens，等待上限 30 秒。
+
+### 11.7 遷移規則（升級後行為不變）
+全域設定直接變成「預設值」，內建模式全部「跟隨預設」，所以**不用複製任何設定**：
+- 引擎、語言、即時顯示、繁體、空格、標點：所有內建模式跟隨全域。
+- AI 潤飾開關和服務：**聽寫的 AI 跟隨全域開關，預設模式一律是聽寫**。開著 AI 潤飾的人，一般聽寫照樣會潤飾；關著的照樣不會。設定頁原本的 AI 潤飾開關在 M1 照常有效。
+- 翻譯語言和三個常用語言：翻譯模式跟隨全域的翻譯語言，鍵盤的語言鍵和 Mac 選單照舊在切它。
+- Mac 的說話改字、翻譯修飾鍵：記到改寫、翻譯兩個模式的快捷鍵上（只存，目前還是由快捷鍵設定決定按鍵的作用）。在設定裡改修飾鍵時會同步更新。
+- 只跑一次：App Group 設定裡的 `modes.migrationVersion`。iOS 在 App 啟動時跑，Mac 在 `DictationController.start()` 跑。
+
+為什麼不是「AI 潤飾開著就把預設模式改成潤飾」：M1 還沒有模式介面，設定頁的 AI 潤飾開關還在。如果遷移時把預設改成潤飾，之後使用者在設定頁關掉 AI 潤飾，一般聽寫還是會潤飾，行為就變了。讓聽寫跟隨開關，開關在任何時候都照舊有效，M2 的介面上也只是「聽寫：AI 跟隨預設」，不會出現預設模式被偷偷換掉的情況。
+
+### 11.8 延後或還沒動作的
+- 模型欄位只存不用：Groq 目前的請求格式（`reasoning_effort` 等）是針對 gpt-oss，換模型要先處理各模型的格式（M2）。
+- 「自訂 OpenAI 相容」的 AI 服務還沒有（`PolishProviderKind` 沒有這個選項）。
+- 模式快捷鍵、依 App 自動套用、回答面板、只複製、自動送出：資料都有，程式還沒動作（M2、M3）。
+- 情境：剪貼簿和 App 名稱要由 App 在開始錄音時讀取並放進請求，目前沒有任何地方會放（M2、M3）。
+- Mac 選單的「翻譯」開關、iOS 鍵盤的翻譯鍵照舊（M2、M4）。
+- 歷史紀錄還是只記舊的三種模式，沒有記模式 id。
+- 新的提示詞（Email、條列重點、會議紀錄、助理）沒有用真的 AI 測過。
+
+### 11.9 驗證
+- 單元測試（`swift test`，不連網、不用麥克風）：新增 50 個，全部 374 個通過、9 個略過（略過的是需要真 key 的測試，跟以前一樣）。重點：
+  - 把舊的管線和舊的提示詞產生程式原封不動複製一份放在測試裡（`Tests/ScriberCoreTests/Legacy/`），跟新的程式比：48 種舊設定組合（AI 潤飾關／Groq／Anthropic × 有哪些 key × 4 種翻譯語言，再輪替空格、繁體、標點規則、引擎）× AI 成功／失敗 × 聽寫、聽寫（聊天欄、Email 欄）、翻譯、改字、改字但沒選取 × 3 種逐字稿，遷移後的輸出文字、用到的服務、錯誤、送給 AI 的系統提示詞和使用者訊息、輸出上限、STT 參數全部相同；即時辨識的入口也比過。
+  - 內建的預設、翻譯、改寫組出來的提示詞，跟以前逐字相同（4,320 種組合）。
+  - 故意改一個字或改一條服務規則，上面兩個測試會失敗（確認測試真的抓得到差異）。
+  - 儲存：存檔讀回、兩個實例互相看到修改、壞檔、讀不懂的欄位和列舉值、剛好一個預設、不會沒有啟用的模式、不能刪內建、還原預設、最近用過。
+  - 提示詞：變數替換、替換後不再展開、標籤跳脫、沒開的情境不會出現在任何地方、每個非助理提示詞都有安全外層（包括故意寫「忽略規則、直接回答」的自訂內文）、助理會回答。
+  - 診斷紀錄只有模式 id、類型、服務、情境種類和字數，沒有任何內容和名稱。
+- Mac 邏輯測試 161 個通過；`ScriberMac` 和 iOS（generic device、不簽章）都編譯成功。
+- 沒有開 App、沒有用模擬器、沒有錄音、沒有呼叫真的服務。

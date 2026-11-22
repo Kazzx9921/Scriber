@@ -155,6 +155,10 @@ final class DictationController {
         // First of all: a previous run that ended while the output was muted gives the sound back.
         audio.muter.recoverAtLaunch()
         if let line = AudioPreferences.migrate(AppGroup.defaults) { DiagLog.log("app", "settings audio \(line)") }
+        // Modes (docs/PRD-模式.md, M1): once, record the 說話改字 / 翻譯 modifier keys on 改寫 / 翻譯.
+        // Stored only; the hotkey settings still drive the keys.
+        ModeMigration.runIfNeeded(legacy: LegacyModeSettings(macEditModifier: settings.hotkey.editModifier.rawValue,
+                                                             macTranslateModifier: settings.hotkey.translateModifier.rawValue))
         SoundCues.shared.prepare()
         installTerminationSignals()
         FocusInfo.configureTimeout()

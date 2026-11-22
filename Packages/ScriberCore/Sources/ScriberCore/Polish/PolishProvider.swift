@@ -4,19 +4,32 @@ import ScriberShared
 // CONTRACT FILE — implementations owned by the "providers + pipeline" agent.
 
 public struct PolishContext: Sendable {
+    /// The pre-modes task. Decides the prompt when `prompt` is nil; otherwise the closest legacy
+    /// mode of `prompt.kind` (助理 → `.dictate`).
     public var mode: DictationMode
     public var dictionary: [DictionaryEntry]
-    /// Text to rewrite when mode == .edit.
+    /// Text to rewrite when the task is a rewrite (`.edit`); also context for other tasks when
+    /// `contextFlags.selectedText` is on.
     public var selectedText: String?
     public var translateTarget: String
     public var fieldHint: FieldHint
     public var spaceBetweenCJKAndLatin: Bool
+    /// The mode's prompt. nil: the shipped prompt for `mode` (預設 / 翻譯 / 改寫).
+    public var prompt: ResolvedPrompt?
+    /// Which context the mode sends besides the transcript (rewrite always gets the selection).
+    public var contextFlags: ModeContextFlags
+    public var clipboardText: String?
+    public var appName: String?
+
     public init(mode: DictationMode = .dictate, dictionary: [DictionaryEntry] = [], selectedText: String? = nil,
                 translateTarget: String = "English", fieldHint: FieldHint = .general,
-                spaceBetweenCJKAndLatin: Bool = true) {
+                spaceBetweenCJKAndLatin: Bool = true, prompt: ResolvedPrompt? = nil,
+                contextFlags: ModeContextFlags = .none, clipboardText: String? = nil, appName: String? = nil) {
         self.mode = mode; self.dictionary = dictionary; self.selectedText = selectedText
         self.translateTarget = translateTarget; self.fieldHint = fieldHint
         self.spaceBetweenCJKAndLatin = spaceBetweenCJKAndLatin
+        self.prompt = prompt; self.contextFlags = contextFlags
+        self.clipboardText = clipboardText; self.appName = appName
     }
 }
 
