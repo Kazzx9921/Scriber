@@ -42,6 +42,15 @@ public struct ModeDefaults: Sendable, Equatable {
     }
 }
 
+/// How much context (情境感知, PRD §7.6) goes along with the transcript. The apps cap what they read
+/// to the same lengths (the prompt builder caps again).
+public enum ModeContextLimit {
+    /// Longest clipboard / selected-text context (characters). A rewrite's own selection is not capped.
+    public static let characters = 4000
+    /// Longest app name (characters).
+    public static let appName = 80
+}
+
 /// The prompt a resolved mode uses.
 public struct ResolvedPrompt: Sendable, Equatable {
     public var id: String
@@ -169,6 +178,16 @@ public enum ModeResolver {
         if let builtIn = BuiltInModeID.forLegacy(request.mode),
            let mode = modes.first(where: { $0.id == builtIn.rawValue }) { return mode }
         return ModeStore.defaultMode(in: modes)
+    }
+
+    /// Enabled modes that list `bundleID` under 自動套用的 App (macOS, PRD §7.2), in list order:
+    /// when several match, the earlier one wins. Bundle ids compare case-insensitively. Whether a
+    /// candidate can run right now (keys) is the caller's decision.
+    public static func autoApplyCandidates(for bundleID: String?, in modes: [DictationModeConfig]) -> [DictationModeConfig] {
+        guard let id = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !id.isEmpty else { return [] }
+        return ModeStore.normalized(modes).filter { mode in
+            mode.isEnabled && mode.trigger.appBundleIDs.contains { $0.lowercased() == id }
+        }
     }
 
     /// The configuration a request runs with (selection known).

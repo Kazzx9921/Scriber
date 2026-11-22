@@ -3,7 +3,7 @@ import ScriberCore
 import ScriberShared
 
 /// 模式 (docs/PRD-模式.md §6.1): one card per mode — icon, name, the 預設 marker, a row of small tags
-/// (engine, language, AI, prompt) and its hotkey, with the on/off switch on the right. Click a card to
+/// (engine, language, AI, prompt, auto-apply apps, output) and its hotkey, with the on/off switch on the right. Click a card to
 /// edit it (pushed inside the page, like a transcript in 轉錄); drag cards to reorder; the "…" that
 /// appears on hover and the context menu hold 設為預設 / 複製 / 上移 / 下移 / 還原預設 or 刪除.
 /// The header has 提示詞 (the prompt library) and 新增.
@@ -24,7 +24,7 @@ struct ModesView: View {
     @State private var dropTarget: String?
     @State private var didApplyInitial = false
 
-    static let info = "模式是一組設定：用哪個辨識引擎、要不要 AI 整理、用哪個提示詞。主要快捷鍵用預設模式；模式也可以有自己的快捷鍵。「跟隨預設」用的是設定頁的值。"
+    static let info = "模式是一組設定：用哪個辨識引擎、要不要 AI 整理、用哪個提示詞、結果怎麼輸出。主要快捷鍵用預設模式，在模式「自動套用」的 App 裡改用那個模式；模式也可以有自己的快捷鍵。「跟隨預設」用的是設定頁的值。"
 
     private var context: ModeContext {
         ModeContext(settings: settings, modes: store.modes, prompts: prompts.prompts,

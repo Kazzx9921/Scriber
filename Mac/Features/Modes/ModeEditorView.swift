@@ -4,11 +4,11 @@ import ScriberShared
 
 /// One mode, edited in place (pushed inside 模式, like a transcript in 轉錄): back, icon, name and
 /// a "…" menu on top, then the settings page's grouped rows in the order of docs/PRD-模式.md §2:
-/// 基本, 觸發, 辨識, 文字格式, AI 處理, 輸出. Every change is saved right away.
+/// 基本, 觸發 (hotkey, 自動套用的 App), 辨識, 文字格式, AI 處理, 情境 (only while the mode's AI can
+/// run), 輸出 (paste / copy only / panel, 自動送出). Every change is saved right away.
 ///
-/// "跟隨預設" items name the value they follow. Only what works in this version is shown: automatic
-/// apps, context, the answer / copy-only outputs, auto-send and the model come later (M3) and have
-/// no controls here.
+/// "跟隨預設" items name the value they follow. Only what works is shown: websites and the model
+/// have no controls.
 struct ModeEditorView: View {
     let modeID: String
     let store: ModeStore
@@ -86,6 +86,9 @@ struct ModeEditorView: View {
                 recognitionSection(mode, resolved: resolved, context: context)
                 formatSection(mode, resolved: resolved)
                 aiSection(mode, resolved: resolved, template: template, context: context)
+                if resolved.llm != nil {
+                    contextSection(mode, template: template, context: context)
+                }
                 outputSection(mode, template: template, context: context)
             }
             .formStyle(.grouped)
@@ -255,12 +258,43 @@ struct ModeEditorView: View {
                 comboRow(mode, shortcut: shortcut, problem: problem, context: context)
                     .padding(.leading, 26)
             }
+            autoApplyRows(mode, context: context)
         } header: {
-            SectionHeader("觸發") {
-                InfoItem(title: "按住修飾鍵再按快捷鍵", text: "例如按住 ⇧ 再按快捷鍵。有沒有開自動貼上都能用。")
-                InfoItem(title: "自己的組合鍵", text: "例如 ⌃⌥M，或單獨一個 F 鍵。不需要任何權限，隨時可用。")
-                InfoText("點一下或按住，跟主要快捷鍵的操作方式一樣。")
+            SectionHeader("觸發") { Self.triggerHelp }
+        }
+    }
+
+    /// Behind the "?" of 觸發.
+    @ViewBuilder
+    static var triggerHelp: some View {
+        InfoItem(title: "按住修飾鍵再按快捷鍵", text: "例如按住 ⇧ 再按快捷鍵。有沒有開自動貼上都能用。")
+        InfoItem(title: "自己的組合鍵", text: "例如 ⌃⌥M，或單獨一個 F 鍵。不需要任何權限，隨時可用。")
+        InfoText("點一下或按住，跟主要快捷鍵的操作方式一樣。")
+        InfoItem(title: "自動套用", text: "在這些 App 裡按主要快捷鍵時，改用這個模式，浮動膠囊會顯示它的圖示。模式自己的快捷鍵優先；同一個 App 在好幾個模式裡，用列表中比較前面的。缺 API key 時照常用預設模式。")
+    }
+
+    // MARK: 自動套用
+
+    @ViewBuilder
+    private func autoApplyRows(_ mode: DictationModeConfig, context: ModeContext) -> some View {
+        let note = context.autoApplyNote(mode)
+        LabeledContent {
+            AddAppMenu(existing: mode.trigger.appBundleIDs) { app in
+                guard !mode.trigger.appBundleIDs.contains(where: { $0.lowercased() == app.bundleID.lowercased() }) else { return }
+                update { $0.trigger.appBundleIDs.append(app.bundleID) }
+                DiagLog.log("modes", "mode auto-apply id=\(mode.id) added=\(app.bundleID)")
             }
+        } label: {
+            RowTitle("自動套用", caption: note?.text, captionIsProblem: note?.isProblem ?? false)
+        }
+        ForEach(mode.trigger.appBundleIDs, id: \.self) { bundleID in
+            let app = ModeApps.info(bundleID)
+            let winner = context.autoApplyWinner(bundleID, over: mode)
+            ModeAppRow(app: app, note: winner.map { "「\($0.name)」優先" } ?? (app.installed ? nil : "沒有安裝")) {
+                update { $0.trigger.appBundleIDs.removeAll { $0 == bundleID } }
+                DiagLog.log("modes", "mode auto-apply id=\(mode.id) removed=\(bundleID)")
+            }
+            .padding(.leading, 26)
         }
     }
 
@@ -532,14 +566,84 @@ struct ModeEditorView: View {
         }
     }
 
+    // MARK: 情境
+
+    private func contextSection(_ mode: DictationModeConfig, template: PromptTemplate, context: ModeContext) -> some View {
+        let isRewrite = template.kind == .rewrite
+        let selectionOn = isRewrite || mode.context.selectedText
+        let selectionCaption: String? = {
+            if isRewrite { return "改寫一定會用" }
+            if selectionOn, !context.accessibilityTrusted { return "需要輔助使用權限" }
+            return nil
+        }()
+        return Section {
+            Toggle(isOn: Binding(get: { selectionOn }, set: { value in update { $0.context.selectedText = value } })) {
+                RowTitle("選取的文字", caption: selectionCaption,
+                         captionIsProblem: !isRewrite && selectionOn && !context.accessibilityTrusted)
+            }
+            .disabled(isRewrite)
+            Toggle("剪貼簿", isOn: binding(\.context.clipboard))
+            Toggle("App 名稱", isOn: binding(\.context.appName))
+        } header: {
+            SectionHeader("情境") { Self.contextHelp }
+        }
+    }
+
+    /// Behind the "?" of 情境.
+    @ViewBuilder
+    static var contextHelp: some View {
+        InfoText("打開的項目會連同你說的話，一起送到這個模式用的 AI 服務，讓它知道你在回什麼、在哪裡打字。預設都關著。")
+        InfoItem(title: "選取的文字", text: "按下快捷鍵時選取的文字。需要輔助使用權限。")
+        InfoItem(title: "剪貼簿", text: "按下快捷鍵時剪貼簿裡的文字。圖片、檔案不送；密碼管理器複製的內容不送。")
+        InfoItem(title: "App 名稱", text: "正在用的 App，例如「Mail」。")
+        InfoText("每項最多 4000 字。診斷紀錄只記字數，不記內容。")
+    }
+
     // MARK: 輸出
+
+    private enum OutputChoice: Hashable {
+        case paste, copyOnly, answer
+    }
 
     private func outputSection(_ mode: DictationModeConfig, template: PromptTemplate, context: ModeContext) -> some View {
         let isCurrent = context.currentModeID == mode.id
+        let choice: OutputChoice = {
+            switch mode.output {
+            case .paste, .replaceSelection: return .paste
+            case .copyOnly: return .copyOnly
+            case .answer: return .answer
+            }
+        }()
+        let autoSendCaption: String? = {
+            guard choice == .paste, mode.autoSend != .none else { return nil }
+            return context.accessibilityTrusted ? "辨識錯了也會直接送出" : "需要輔助使用權限才能自動貼上"
+        }()
         return Section {
-            LabeledContent("結果") {
-                Text(template.kind == .rewrite ? "取代選取的文字" : "貼到游標處")
-                    .foregroundStyle(.secondary)
+            Picker("結果", selection: Binding(get: { choice }, set: { value in
+                update { mode in
+                    switch value {
+                    case .paste: mode.output = template.kind == .rewrite ? .replaceSelection : .paste
+                    case .copyOnly: mode.output = .copyOnly
+                    case .answer: mode.output = .answer
+                    }
+                }
+            })) {
+                Text(template.kind == .rewrite ? "取代選取的文字" : "貼到游標處").tag(OutputChoice.paste)
+                Text("只複製").tag(OutputChoice.copyOnly)
+                Text("顯示在面板").tag(OutputChoice.answer)
+            }
+            .pickerStyle(.menu)
+            if choice == .paste {
+                Picker(selection: binding(\.autoSend)) {
+                    Text("不送出").tag(ModeAutoSend.none)
+                    Divider()
+                    Text("按 Return").tag(ModeAutoSend.returnKey)
+                    Text("按 ⌘Return").tag(ModeAutoSend.commandReturn)
+                } label: {
+                    RowTitle("自動送出", caption: autoSendCaption,
+                             captionIsProblem: autoSendCaption != nil && !context.accessibilityTrusted)
+                }
+                .pickerStyle(.menu)
             }
             LabeledContent {
                 if isCurrent {
@@ -555,8 +659,17 @@ struct ModeEditorView: View {
                 }
             }
         } header: {
-            Text("輸出")
+            SectionHeader("輸出") { Self.outputHelp }
         }
+    }
+
+    /// Behind the "?" of 輸出.
+    @ViewBuilder
+    static var outputHelp: some View {
+        InfoItem(title: "貼到游標處", text: "打進你正在打字的地方。改寫類是取代選取的文字。")
+        InfoItem(title: "只複製", text: "放進剪貼簿，不貼上。")
+        InfoItem(title: "顯示在面板", text: "不打進輸入框，在畫面下方的面板顯示，可以選取、複製。按 esc 或 ✕ 關閉。")
+        InfoItem(title: "自動送出", text: "貼上後幫你按 Return 或 ⌘Return，適合聊天 App。只在真的貼上時才按，需要輔助使用權限。")
     }
 
     // MARK: Saving

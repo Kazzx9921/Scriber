@@ -82,8 +82,25 @@ struct ModeContext {
     }
 
     /// Engine; language (only when the mode sets it); AI; the prompt (only when it is not the
-    /// mode's own: 「改寫」 using 「改寫」 says nothing); the translate language.
+    /// mode's own: 「改寫」 using 「改寫」 says nothing); the translate language; then the apps it is
+    /// applied in, and the output when it is not a plain paste.
     func tags(_ mode: DictationModeConfig) -> [Tag] {
+        var tags = recognitionAndAITags(mode)
+        let apps = mode.trigger.appBundleIDs
+        if let first = apps.first {
+            let name = ModeApps.info(first).name
+            tags.append(Tag(symbol: "macwindow", text: apps.count == 1 ? name : "\(name) 等 \(apps.count) 個"))
+        }
+        switch mode.output {
+        case .copyOnly: tags.append(Tag(symbol: "doc.on.doc", text: "只複製"))
+        case .answer: tags.append(Tag(symbol: "text.bubble", text: "顯示在面板"))
+        case .paste, .replaceSelection:
+            if mode.autoSend != .none { tags.append(Tag(symbol: "return", text: "自動送出")) }
+        }
+        return tags
+    }
+
+    private func recognitionAndAITags(_ mode: DictationModeConfig) -> [Tag] {
         let resolved = resolved(mode)
         let engineReady = settings.isReady(resolved.sttProvider)
         var tags = [Tag(symbol: engineReady ? "waveform" : "key.fill",
@@ -110,6 +127,26 @@ struct ModeContext {
             tags.append(Tag(symbol: "arrow.right", text: language.displayName))
         }
         return tags
+    }
+
+    // MARK: 自動套用
+
+    /// Why the mode is not used in its apps right now (it runs only when it can; otherwise the
+    /// default mode does). nil when it is, or when it lists no apps.
+    func autoApplyNote(_ mode: DictationModeConfig) -> (text: String, isProblem: Bool)? {
+        guard !mode.trigger.appBundleIDs.isEmpty else { return nil }
+        guard mode.isEnabled else { return ("模式停用中", false) }
+        let resolved = resolved(mode)
+        if !settings.isReady(resolved.sttProvider) { return ("引擎沒有 API key，會用預設模式", true) }
+        if resolved.llm?.required == true, !settings.hasLLMKey { return ("沒有 AI 的 API key，會用預設模式", true) }
+        return nil
+    }
+
+    /// The mode the app picks (the first enabled one listing it), when it is not `mode`.
+    func autoApplyWinner(_ bundleID: String, over mode: DictationModeConfig) -> DictationModeConfig? {
+        guard mode.isEnabled, let first = ModeResolver.autoApplyCandidates(for: bundleID, in: modes).first,
+              first.id != mode.id else { return nil }
+        return first
     }
 
     // MARK: Names

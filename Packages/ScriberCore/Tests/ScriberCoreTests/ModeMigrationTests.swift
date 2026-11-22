@@ -37,7 +37,9 @@ final class ModeMigrationTests: XCTestCase {
         let store = makeStore()
         var lines: [String] = []
         let legacy = LegacyModeSettings(macEditModifier: "shift", macTranslateModifier: "control")
+        XCTAssertEqual(ModeMigration.completedVersion(defaults: defaults), 0, "never ran")
         XCTAssertTrue(ModeMigration.runIfNeeded(store: store, legacy: legacy, defaults: defaults) { lines.append($0) })
+        XCTAssertEqual(ModeMigration.completedVersion(defaults: defaults), ModeMigration.currentVersion)
         let url = directory.appendingPathComponent("modes.json")
         let written = try Data(contentsOf: url)
         XCTAssertEqual(defaults.integer(forKey: ModeMigration.versionKey), ModeMigration.currentVersion)

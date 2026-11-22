@@ -192,4 +192,35 @@ final class ModeResolverTests: XCTestCase {
         XCTAssertTrue(config(.rewrite).convertsToTraditional)
         XCTAssertTrue(config(.assistant).convertsToTraditional)
     }
+
+    // MARK: 自動套用的 App (M3)
+
+    func testAutoApplyCandidatesInListOrderEnabledOnly() {
+        var modes = DictationModeConfig.builtIns
+        let notes = DictationModeConfig(id: "user.notes", name: "筆記", trigger: ModeTrigger(appBundleIDs: ["com.apple.Notes", "com.apple.mail"]))
+        let off = DictationModeConfig(id: "user.off", name: "停用的", isEnabled: false, trigger: ModeTrigger(appBundleIDs: ["com.apple.mail"]))
+        modes += [notes, off]
+        // Email is earlier in the list than the user's mode; the disabled one never matches.
+        XCTAssertEqual(ModeResolver.autoApplyCandidates(for: "com.apple.mail", in: modes).map(\.id),
+                       [BuiltInModeID.email.rawValue, "user.notes"])
+        XCTAssertEqual(ModeResolver.autoApplyCandidates(for: "COM.APPLE.NOTES", in: modes).map(\.id), ["user.notes"])
+        XCTAssertEqual(ModeResolver.autoApplyCandidates(for: "com.apple.Safari", in: modes), [])
+        XCTAssertEqual(ModeResolver.autoApplyCandidates(for: nil, in: modes), [])
+        XCTAssertEqual(ModeResolver.autoApplyCandidates(for: "  ", in: modes), [])
+        // Reordered: the user's mode now comes first.
+        let reordered = [notes] + DictationModeConfig.builtIns
+        XCTAssertEqual(ModeResolver.autoApplyCandidates(for: "com.apple.mail", in: reordered).first?.id, "user.notes")
+        // Email switched off: only the user's mode is left.
+        modes = modes.map { mode in
+            var mode = mode
+            if mode.id == BuiltInModeID.email.rawValue { mode.isEnabled = false }
+            return mode
+        }
+        XCTAssertEqual(ModeResolver.autoApplyCandidates(for: "com.apple.mail", in: modes).map(\.id), ["user.notes"])
+    }
+
+    func testContextLimitsMatchThePromptBuilder() {
+        XCTAssertEqual(ModeContextLimit.characters, PolishPrompt.contextCharacterLimit)
+        XCTAssertEqual(ModeContextLimit.appName, PolishPrompt.appNameLimit)
+    }
 }

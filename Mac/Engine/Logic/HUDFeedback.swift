@@ -114,6 +114,10 @@ struct HUDFeedback: Hashable, Sendable {
                     message: "文字已複製，請按 ⌘V 貼上。", type: "copied-no-ax")
     }
 
+    /// A mode whose result only goes on the clipboard (只複製).
+    static let copiedOnly = HUDFeedback(kind: .info, symbol: "doc.on.doc", label: "已複製",
+                                        message: "已複製到剪貼簿", type: "copied-only")
+
     static func copiedSecureInput(appName: String?) -> HUDFeedback {
         let who = appName.map { "「\($0)」" } ?? "某個 App"
         return HUDFeedback(kind: .failure, symbol: "lock.fill", label: "請按 ⌘V 貼上",

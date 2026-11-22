@@ -169,12 +169,17 @@ struct PromptEditorView: View {
     }
 
     /// Behind the "?" next to 內容.
+    private var variablesHelp: some View { Self.variablesHelp(kind: kind) }
+
     @ViewBuilder
-    private var variablesHelp: some View {
+    static func variablesHelp(kind: PromptKind) -> some View {
         InfoText("寫給 AI 的指示：語氣、格式、要不要條列。")
         InfoItem(title: "{{language}}", text: "翻譯的目標語言")
         InfoItem(title: "{{spacing}}", text: "中英文之間要不要空格（照模式的文字格式）")
-        InfoItem(title: "{{selected}}", text: "選取的文字（改寫類）")
+        InfoItem(title: "{{selected}}", text: "選取的文字（改寫類，或模式打開「情境 → 選取的文字」）")
+        InfoItem(title: "{{clipboard}}", text: "剪貼簿的文字（模式打開「情境 → 剪貼簿」）")
+        InfoItem(title: "{{app}}", text: "正在用的 App 名稱（模式打開「情境 → App 名稱」）")
+        InfoText("情境沒打開時，這些變數是「（未提供）」。")
         if kind == .assistant {
             InfoText("Scriber 會在外面加上固定的規則：只輸出答案。這部分不能改。")
         } else {

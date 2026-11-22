@@ -2,7 +2,7 @@ import AppKit
 import Carbon
 import CoreGraphics
 
-/// Posting ⌘V / ⌘C into the frontmost app.
+/// Posting ⌘V / ⌘C (and the automatic Return of a mode) into the frontmost app.
 enum SyntheticKeys {
     /// Written into `eventSourceUserData` of every event Scriber posts, so its own event tap
     /// ignores them ("SCRB").
@@ -20,6 +20,25 @@ enum SyntheticKeys {
               let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return false }
         // Explicit flags: only Command (left), whatever the user is still holding.
         let flags = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | ModifierBits.leftCommand)
+        for event in [down, up] {
+            event.flags = flags
+            event.setIntegerValueField(.eventSourceUserData, value: marker)
+        }
+        down.post(tap: .cgSessionEventTap)
+        up.post(tap: .cgSessionEventTap)
+        return true
+    }
+
+    /// Posts `keyCode` (down and up) with ⌘ or with no modifier at all, whatever the user is still
+    /// holding — a mode's automatic Return / ⌘Return after a paste (docs/PRD-模式.md §7.5).
+    @discardableResult
+    static func postKey(keyCode: UInt16, command: Bool) -> Bool {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return false }
+        source.setLocalEventsFilterDuringSuppressionState([.permitLocalMouseEvents, .permitSystemDefinedEvents],
+                                                          state: .eventSuppressionStateSuppressionInterval)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return false }
+        let flags = command ? CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | ModifierBits.leftCommand) : []
         for event in [down, up] {
             event.flags = flags
             event.setIntegerValueField(.eventSourceUserData, value: marker)

@@ -20,6 +20,11 @@ import ScriberShared
 /// before the microphone starts (pause media, start cue, mute after the cue), `end` right after it
 /// stops on every path (unmute, stop cue only for a normal stop, resume media after the delay).
 /// The microphone itself follows the pinned device (`MacRecorder` / `InputEngine`).
+///
+/// Modes (docs/PRD-模式.md): the press picks the mode (`DictationStart.plan`: a mode's own hotkey >
+/// the app in front (自動套用) > the current mode); the mode's 情境 (app name, clipboard, selection)
+/// is read at the start only when the mode sends it to its AI; the result is pasted (then
+/// optionally Return / ⌘Return), only copied, or shown in the answer panel (`ResultDelivery`).
 @MainActor
 @Observable
 final class DictationController {
@@ -121,6 +126,7 @@ final class DictationController {
 
     @ObservationIgnored private let settings = MacSettings.shared
     @ObservationIgnored private let hud = HUDController()
+    @ObservationIgnored private let answers = AnswerPanelController()
     @ObservationIgnored private let recorder = MacRecorder()
     @ObservationIgnored private let inserter = TextInserter()
     @ObservationIgnored private let files = MacRecordingFiles()
@@ -160,9 +166,17 @@ final class DictationController {
         // First of all: a previous run that ended while the output was muted gives the sound back.
         audio.muter.recoverAtLaunch()
         if let line = AudioPreferences.migrate(AppGroup.defaults) { DiagLog.log("app", "settings audio \(line)") }
+        // Asked before the modes migration below marks this install as migrated.
+        let existingInstall = AutoApplyMigration.isExistingInstall(
+            onboardingDone: settings.hasCompletedOnboarding, modesMigrationVersion: ModeMigration.completedVersion(),
+            hasAnyKey: !settings.storedKeys.isEmpty)
         // Modes (docs/PRD-模式.md, M1): once, record the 說話改字 / 翻譯 modifier keys on 改寫 / 翻譯.
         ModeMigration.runIfNeeded(legacy: LegacyModeSettings(macEditModifier: settings.hotkey.editModifier.rawValue,
                                                              macTranslateModifier: settings.hotkey.translateModifier.rawValue))
+        // M3: 自動套用 starts working; an existing install does not suddenly get Email in Mail.
+        AutoApplyMigration.runIfNeeded(store: .shared, defaults: AppGroup.defaults, existingInstall: existingInstall) {
+            DiagLog.log("modes", $0)
+        }
         SoundCues.shared.prepare()
         installTerminationSignals()
         FocusInfo.configureTimeout()
@@ -227,6 +241,7 @@ final class DictationController {
         didShutdown = true
         DiagLog.log("app", "quit phase=\(phase.rawValue)")
         if phase == .recording { recorder.discard() }
+        answers.close()
         // Unmute and resume media (right away) on every quit, recording or not.
         audio.shutdown()
         MicLevelTest.running?.stop()
@@ -365,11 +380,22 @@ final class DictationController {
     private func begin(_ variant: HotkeyVariant, via: String) {
         guard phase == .idle else { return }
         let defaults = ModeDefaults(settings: AppSettings.shared)
+        // The app in front picks the mode for the main hotkey (自動套用); Scriber's own window never does.
+        let front = NSWorkspace.shared.frontmostApplication
+        let frontID = front?.bundleIdentifier.flatMap { $0 == Bundle.main.bundleIdentifier ? nil : $0 }
+        settings.refreshKeys()
+        let readiness = ModeReadiness(hasLLMKey: settings.hasLLMKey,
+                                      readyEngines: Set(STTProviderKind.allCases.filter { settings.isReady($0) }))
         guard let start = DictationStart.plan(variant, translateLocked: settings.translateLocked,
                                               modes: ModeStore.shared.snapshot(), prompts: PromptLibrary.shared.snapshot(),
-                                              defaults: defaults) else {
+                                              defaults: defaults, frontmostBundleID: variant == .dictate ? frontID : nil,
+                                              readiness: readiness) else {
             DiagLog.log("engine", "start via=\(via) ignored: \(variant.logName) is not a mode any more")
             return
+        }
+        if !start.autoApplySkipped.isEmpty || start.autoAppliedFor != nil {
+            DiagLog.log("engine", "auto-apply front=\(frontID ?? "-") mode=\(start.modeID) "
+                        + "applied=\(start.autoAppliedFor != nil) skipped=\(start.autoApplySkipped.joined(separator: ","))")
         }
         let mode = start.legacyMode
 
@@ -397,7 +423,6 @@ final class DictationController {
             return
         }
 
-        settings.refreshKeys()
         let engine = start.resolved.sttProvider
         guard settings.isReady(engine) else {
             DiagLog.log("engine", "start via=\(via) refused: engine \(engine.rawValue) not ready mode=\(start.modeID)")
@@ -417,9 +442,8 @@ final class DictationController {
         dropKept(reason: "newDictation")
         lastProblem = nil
         MicLevelTest.running?.stop()
-        let request = start.request()
+        var request = start.request()
         let tag = MacDiag.id(request.id)
-        let front = NSWorkspace.shared.frontmostApplication
         let startedAt = Date()
         // Connect first: the socket handshake (~0.3 s) overlaps the microphone start.
         let live = makeLiveRun(for: request, resolved: start.resolved)
@@ -451,6 +475,23 @@ final class DictationController {
         if start.needsSelection {
             selection = Task.detached(priority: .userInitiated) { SelectionReader.readViaAccessibility() }
         }
+        // 情境 the mode sends to its AI, read now that the microphone runs (a pasteboard prompt from
+        // macOS cannot cost any speech). Nothing is read for a mode that does not ask.
+        if start.wantsAppName || start.wantsClipboard {
+            var context = DictationStart.Context()
+            var parts: [String] = []
+            if start.wantsAppName {
+                context.appName = front?.localizedName
+                parts.append("app=\(context.appName?.count ?? 0)")
+            }
+            if start.wantsClipboard {
+                let clip = ClipboardContext.read(SystemClipboard(), canRead: Permissions.canReadPasteboard)
+                context.clipboard = clip.text
+                parts.append("clipboard[\(clip.logDescription)]")
+            }
+            request = start.request(id: request.id, context: context)
+            DiagLog.log("engine", "context id=\(tag) \(parts.joined(separator: " "))")
+        }
         capture = Capture(request: request, url: url, startedAt: startedAt, via: via, selection: selection, live: live,
                           start: start)
         currentMode = mode
@@ -469,10 +510,11 @@ final class DictationController {
         }
 
         maxDurationWork?.cancel()
+        let requestID = request.id
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.phase == .recording, self.capture?.request.id == request.id else { return }
-                DiagLog.log("engine", "max duration reached id=\(MacDiag.id(request.id))")
+                guard let self, self.phase == .recording, self.capture?.request.id == requestID else { return }
+                DiagLog.log("engine", "max duration reached id=\(MacDiag.id(requestID))")
                 self.finish(via: "maxDuration")
             }
         }
@@ -635,7 +677,8 @@ final class DictationController {
             }
         }
         process(url: summary.url, request: request, seconds: summary.duration, selection: capture.selection,
-                selectionPending: capture.start?.needsSelection ?? (request.mode == .edit), live: capture.live,
+                selectionPending: capture.start?.needsSelection ?? (request.mode == .edit),
+                selectionRequired: capture.start?.selectionRequired ?? (request.mode == .edit), live: capture.live,
                 stoppedAt: stoppedAt, start: capture.start)
     }
 
@@ -711,10 +754,12 @@ final class DictationController {
 
     // MARK: Pipeline
 
-    /// `selectionPending`: 說話改字 still has to find the selected text (Accessibility result from
-    /// the start, or the ⌘C fallback now).
+    /// `selectionPending`: the selected text still has to be found (Accessibility result from the
+    /// start). `selectionRequired`: it is what the mode works on (說話改字 / 改寫): the ⌘C fallback
+    /// may be used, and without a selection the default mode runs. Otherwise it is only context.
     private func process(url: URL, request: DictationRequest, seconds: Double,
                          selection: Task<SelectionReader.AXResult, Never>?, selectionPending: Bool,
+                         selectionRequired: Bool = true,
                          live: LiveRun? = nil, stoppedAt: Date = Date(), start: DictationStart? = nil) {
         var job = Job(request: request, url: url, seconds: seconds, live: live, start: start)
         let jobID = job.id
@@ -722,10 +767,12 @@ final class DictationController {
         job.task = Task { [weak self] in
             var request = request
             if selectionPending {
-                let text = await self?.resolveSelection(selection, requestID: request.id)
+                let text = await self?.resolveSelection(selection, requestID: request.id, allowCopy: selectionRequired)
                 if let text {
-                    request.selectedText = text
-                } else {
+                    // Context is capped like the clipboard; the text a rewrite works on is not.
+                    request.selectedText = selectionRequired || text.count <= ModeContextLimit.characters
+                        ? text : String(text.prefix(ModeContextLimit.characters))
+                } else if selectionRequired {
                     // Nothing selected: plain dictation (what the pipeline would do anyway).
                     request.mode = .dictate
                     request.selectedText = nil
@@ -758,7 +805,10 @@ final class DictationController {
         self.job = job
     }
 
-    private func resolveSelection(_ axTask: Task<SelectionReader.AXResult, Never>?, requestID: String) async -> String? {
+    /// `allowCopy`: may post ⌘C when Accessibility cannot read the selection (only for what a
+    /// rewrite works on; context never posts keys into the app).
+    private func resolveSelection(_ axTask: Task<SelectionReader.AXResult, Never>?, requestID: String,
+                                  allowCopy: Bool = true) async -> String? {
         let ax: SelectionReader.AXResult
         if let axTask {
             ax = await axTask.value
@@ -772,6 +822,9 @@ final class DictationController {
             return text
         case .empty:
             DiagLog.log("edit", "id=\(tag) nothing selected (accessibility) → dictate")
+            return nil
+        case .unavailable(let reason) where !allowCopy:
+            DiagLog.log("edit", "id=\(tag) selection context unavailable (\(reason)) → none")
             return nil
         case .unavailable(let reason):
             let copied = await SelectionReader.readViaCopy()
@@ -808,15 +861,57 @@ final class DictationController {
         recent.insert(RecentResult(text: text, date: Date(), mode: request.mode), at: 0)
         if recent.count > Self.recentLimit { recent.removeLast(recent.count - Self.recentLimit) }
 
-        let outcome = await inserter.insert(text, requestID: request.id, restoreClipboard: settings.restoreClipboard)
-        phase = .idle
-        switch outcome {
-        case .pasted:
+        let tag = MacDiag.id(request.id)
+        let delivery = ResultDelivery(output: result.output, autoSend: result.autoSend)
+        switch delivery {
+        case .answer:
+            // Not typed anywhere: the panel shows it (never takes focus).
+            phase = .idle
             hud.hide()
-            DiagLog.log("engine", "finished id=\(MacDiag.id(request.id)) totalMs=\(MacDiag.millis(since: started))")
-        case .copied(let feedback):
-            show(feedback)
+            let ran = ModeStore.shared.mode(id: result.modeID)
+            answers.show(answer: text, question: result.rawTranscript, title: ran?.name ?? job.start?.name ?? "回答",
+                         symbol: ran?.icon ?? job.start?.icon ?? "bubble.left.and.text.bubble.right") { [weak self] answer in
+                self?.inserter.copyForManualPaste(answer)
+                DiagLog.log("engine", "answer copied chars=\(answer.count)")
+            }
+            DiagLog.log("engine", "finished id=\(tag) output=answer chars=\(text.count) totalMs=\(MacDiag.millis(since: started))")
+        case .copyOnly:
+            inserter.copyForManualPaste(text)
+            phase = .idle
+            show(.copiedOnly)
+            DiagLog.log("engine", "finished id=\(tag) output=copyOnly totalMs=\(MacDiag.millis(since: started))")
+        case .paste:
+            let pasteTarget = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let outcome = await inserter.insert(text, requestID: request.id, restoreClipboard: settings.restoreClipboard)
+            switch outcome {
+            case .pasted:
+                hud.hide()
+                await autoSend(delivery, pastedInto: pasteTarget, tag: tag)
+                DiagLog.log("engine", "finished id=\(tag) output=\(delivery.logName) totalMs=\(MacDiag.millis(since: started))")
+            case .copied(let feedback):
+                if delivery != .paste(autoSend: .none) {
+                    DiagLog.log("engine", "id=\(tag) auto-send skipped: not pasted")
+                }
+                show(feedback)
+            }
+            phase = .idle
         }
+    }
+
+    /// Return / ⌘Return after a paste that happened (docs/PRD-模式.md §7.5), into the same app only.
+    private func autoSend(_ delivery: ResultDelivery, pastedInto pid: pid_t?, tag: String) async {
+        guard case .paste(let autoSend) = delivery, autoSend != .none else { return }
+        try? await Task.sleep(nanoseconds: UInt64(AutoSendGate.delay * 1_000_000_000))
+        let front = NSWorkspace.shared.frontmostApplication
+        let sameApp = pid != nil && front?.processIdentifier == pid
+        guard let key = AutoSendGate.key(for: delivery, paste: .pasted, sameAppInFront: sameApp,
+                                         secureInput: Permissions.secureInputActive) else {
+            DiagLog.log("paste", "id=\(tag) auto-send skipped sameApp=\(sameApp) secure=\(Permissions.secureInputActive)")
+            return
+        }
+        _ = await SyntheticKeys.waitForModifiersReleased()
+        let posted = SyntheticKeys.postKey(keyCode: key.keyCode, command: key.command)
+        DiagLog.log("paste", "id=\(tag) auto-send \(key.logName) posted=\(posted) front=\(MacDiag.app(front))")
     }
 
     private func pipelineFailed(_ error: Error, jobID: UUID, request: DictationRequest, started: Date) {

@@ -207,8 +207,8 @@ enum PolishPrompt {
 
     /// Longest clipboard / selected-text context sent along (characters). A rewrite's own selection
     /// is not capped (it is what gets rewritten).
-    static let contextCharacterLimit = 4000
-    static let appNameLimit = 80
+    static let contextCharacterLimit = ModeContextLimit.characters
+    static let appNameLimit = ModeContextLimit.appName
 
     struct ContextBlock: Equatable {
         var tag: String

@@ -205,7 +205,7 @@ struct HUDView: View {
 /// a colourful wallpaper.
 /// `cornerRadius` nil: a capsule; otherwise a rounded rectangle (the live-text panel, which at the
 /// pill's height and a radius of half of it is the same capsule).
-private struct PillBackground: ViewModifier {
+struct PillBackground: ViewModifier {
     var cornerRadius: CGFloat?
 
     func body(content: Content) -> some View {

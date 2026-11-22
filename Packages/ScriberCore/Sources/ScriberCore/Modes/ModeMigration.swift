@@ -31,6 +31,12 @@ public enum ModeMigration {
     public static let currentVersion = 1
     static let versionKey = "modes.migrationVersion"
 
+    /// The migration version already done on this install (0: never ran, i.e. a new install or the
+    /// first launch after upgrading from before modes).
+    public static func completedVersion(defaults: UserDefaults = AppGroup.defaults) -> Int {
+        defaults.integer(forKey: versionKey)
+    }
+
     /// Runs the migration if this version has not run yet. Returns whether it ran.
     @discardableResult
     public static func runIfNeeded(store: ModeStore = .shared, legacy: LegacyModeSettings = LegacyModeSettings(),

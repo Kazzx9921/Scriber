@@ -81,8 +81,8 @@ public enum PromptKind: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// What happens to the finished text (PRD §4). M1 stores it and reports it in `PipelineResult`;
-/// the apps act on it from M3.
+/// What happens to the finished text (PRD §4). Reported in `PipelineResult`; the Mac acts on every
+/// case since M3 (iOS: M4).
 public enum ModeOutput: String, Codable, CaseIterable, Sendable {
     /// Type it at the cursor (what dictation does today).
     case paste
@@ -99,7 +99,8 @@ public enum ModeOutput: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Key pressed after pasting (PRD §7.5). Default `none`.
+/// Key pressed after pasting (PRD §7.5). Default `none`. Only after a paste that really happened
+/// (never for copy-only, the answer panel, or text left on the clipboard because pasting could not work).
 public enum ModeAutoSend: String, Codable, CaseIterable, Sendable {
     case none
     case returnKey = "return"
@@ -113,11 +114,13 @@ public enum ModeAutoSend: String, Codable, CaseIterable, Sendable {
 
 // MARK: - Groups
 
-/// How a mode is started (PRD §2 觸發, §7.2, §7.3). Stored only in M1: nothing acts on it yet.
+/// How a mode is started (PRD §2 觸發, §7.2, §7.3). The Mac acts on `hotkey` (M2) and
+/// `appBundleIDs` (M3); `websites` is stored only.
 public struct ModeTrigger: Codable, Hashable, Sendable {
     /// This mode's own hotkey, if any.
     public var hotkey: ModeHotkey?
-    /// macOS: use this mode when one of these apps is in front (bundle identifiers).
+    /// macOS: the main hotkey uses this mode when one of these apps is in front (bundle
+    /// identifiers; see `ModeResolver.autoApplyCandidates`). A mode's own hotkey wins over it.
     public var appBundleIDs: [String]
     /// macOS, later phase: URL patterns of the browser's current page.
     public var websites: [String]
