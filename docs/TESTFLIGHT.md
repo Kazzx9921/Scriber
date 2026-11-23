@@ -37,7 +37,7 @@ xcodebuild -exportArchive -archivePath build/ios/Scriber.xcarchive \
   -exportOptionsPlist scripts/ExportOptions.plist -exportPath build/ios/export \
   -allowProvisioningUpdates
 ```
-`scripts/ExportOptions.plist` 還沒建立，要用指令上傳時再加（`method` = `app-store-connect`，`destination` = `upload`）。
+`scripts/ExportOptions.plist` 已經有了。如果出現「Failed to Use Accounts」，到 Xcode → Settings → Accounts 把 Apple 帳號登出再登入一次。
 
 ## 加測試者
 
@@ -62,7 +62,7 @@ xcodebuild -exportArchive -archivePath build/ios/Scriber.xcarchive \
 - **審核備註要附一把測試用的 API key 和操作步驟**，不然審核人員無法驗證功能。
 - 說明鍵盤為什麼需要「完整取用」（鍵盤要跟主 App 溝通，麥克風在主 App）。
 - 說明為什麼需要背景音訊（待命時讓鍵盤不用每次跳到 App）。
-- **「在鍵盤內直接錄音」建議先拿掉**。它預設關閉，但程式碼和鍵盤的麥克風用途宣告都在，是退件風險最高的一項（規範 2.5.1）。
+- **「在鍵盤內直接錄音」**：預設關閉，但程式碼和鍵盤的麥克風用途宣告都在，是退件風險最高的一項（規範 2.5.1）。2026-11-22 決定保留在送審版本裡，被退再拿掉。
 - App Store Connect 的「App 隱私權」問卷要自己填，見下一節。
 
 ## 隱私權
